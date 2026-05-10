@@ -1,18 +1,16 @@
-// bexio API client. Phase 1: kb_order list, kb_invoice CRUD, OAuth refresh.
-// Pinned API version: 2.0. Monthly drift smoke-test in Phase 1 (see plan doc).
+// bexio API client — public surface.
+// Pinned to API version 2.0. Drift smoke-test runs monthly in the worker.
 
-export const BEXIO_API_BASE = 'https://api.bexio.com/2.0' as const;
-export const BEXIO_AUTH_BASE = 'https://auth.bexio.com/realms/bexio/protocol/openid-connect' as const;
-
-// Phase 1 placeholders. Real implementation lands in step 7 of Phase 1.
-export async function refreshAccessToken(_refreshToken: string): Promise<{
-  access_token: string;
-  refresh_token: string;
-  expires_in: number;
-}> {
-  throw new Error('not implemented yet — Phase 1 step 7');
-}
-
-export async function listRecurringOrders(_accessToken: string): Promise<unknown[]> {
-  throw new Error('not implemented yet — Phase 1 step 7');
-}
+export { BEXIO_API_BASE, BEXIO_AUTH_BASE } from './http.ts';
+export { getValidAccessToken } from './auth.ts';
+export { listRecurringOrders, getOrder } from './orders.ts';
+export { createInvoiceFromOrder, issueInvoice, sendInvoice, getInvoice } from './invoices.ts';
+export {
+  BexioApiError,
+  type BexioOrder,
+  type BexioInvoice,
+  type BexioRepetition,
+  type RecurringInterval,
+  type CreateInvoiceFromOrderInput,
+  type BexioErrorClass,
+} from './types.ts';

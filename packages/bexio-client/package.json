@@ -9,5 +9,9 @@
   },
   "scripts": {
     "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bexio-bot/db": "workspace:*",
+    "drizzle-orm": "^0.36.0"
   }
 }

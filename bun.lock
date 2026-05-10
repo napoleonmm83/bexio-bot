@@ -13,7 +13,9 @@
       "name": "@bexio-bot/worker",
       "version": "0.0.1",
       "dependencies": {
+        "@bexio-bot/bexio-client": "workspace:*",
         "@bexio-bot/db": "workspace:*",
+        "@bexio-bot/notify": "workspace:*",
         "drizzle-orm": "^0.36.0",
         "pino": "^9.5.0",
       },
@@ -21,6 +23,10 @@
     "packages/bexio-client": {
       "name": "@bexio-bot/bexio-client",
       "version": "0.0.1",
+      "dependencies": {
+        "@bexio-bot/db": "workspace:*",
+        "drizzle-orm": "^0.36.0",
+      },
     },
     "packages/db": {
       "name": "@bexio-bot/db",
