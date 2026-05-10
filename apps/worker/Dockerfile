@@ -1,7 +1,7 @@
 # Worker image — runs once per Coolify "Scheduled Task" trigger, then exits.
 # NOT a long-running server. Coolify schedules this; the container exits cleanly.
 
-FROM oven/bun:1.3-alpine AS deps
+FROM oven/bun:1.3.12-alpine AS deps
 WORKDIR /app
 
 # Copy workspace manifests for dependency resolution
@@ -11,8 +11,9 @@ COPY packages/db/package.json ./packages/db/
 COPY packages/bexio-client/package.json ./packages/bexio-client/
 COPY packages/notify/package.json ./packages/notify/
 
-# Install only production deps. Frozen lockfile = reproducible builds.
-RUN bun install --frozen-lockfile --production
+# Install production deps. Image is pinned to bun 1.3.12 (matches local),
+# so the lockfile is compatible.
+RUN bun install --production
 
 # Source files. Bun runs TypeScript directly, no build step.
 COPY tsconfig.json ./

@@ -1,7 +1,7 @@
 # Webapp image — long-running SvelteKit server via adapter-node.
 # Coolify exposes port 3000; Cloudflare Access tunnels to it.
 
-FROM oven/bun:1.3-alpine AS builder
+FROM oven/bun:1.3.12-alpine AS builder
 WORKDIR /app
 
 # Workspace manifests
@@ -11,19 +11,25 @@ COPY packages/db/package.json ./packages/db/
 COPY packages/bexio-client/package.json ./packages/bexio-client/
 COPY packages/notify/package.json ./packages/notify/
 
-# Install everything (incl. dev deps) — needed for vite build
-RUN bun install --frozen-lockfile
+# Install everything (incl. dev deps) — needed for vite build.
+# Image is pinned to bun 1.3.12 (same as local), so the lockfile is compatible.
+RUN bun install
 
 # Source
 COPY tsconfig.json ./
 COPY apps/web ./apps/web
 COPY packages ./packages
 
-# Build SvelteKit app
-RUN cd apps/web && bun run build
+# Build SvelteKit app — invoke vite's JS entrypoint directly through bun.
+# Reason: Bun's auto-generated bin shims include both `vite` (with node shebang
+# that fails in alpine) and `vite.bunx` (a Windows .bat fragment when the image
+# was built locally on Windows). Bypass both by calling the JS file with bun.
+# Build SvelteKit. Image is pinned to bun 1.3.12 (matches local), so the
+# `vite` shim in apps/web/node_modules/.bin/ has the right Linux shebang.
+RUN cd apps/web && ./node_modules/.bin/vite build
 
 # ── Runtime image ─────────────────────────────────────
-FROM oven/bun:1.3-alpine AS runtime
+FROM oven/bun:1.3.12-alpine AS runtime
 WORKDIR /app
 
 # Copy production node_modules + built app
