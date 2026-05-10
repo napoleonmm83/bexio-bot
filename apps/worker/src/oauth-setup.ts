@@ -14,7 +14,13 @@ const CLIENT_SECRET = process.env.BEXIO_CLIENT_SECRET;
 const REDIRECT_URI = process.env.BEXIO_REDIRECT_URI ?? 'http://localhost:8080/callback';
 const AUTH_URL = 'https://auth.bexio.com/realms/bexio/protocol/openid-connect/auth';
 const TOKEN_URL = 'https://auth.bexio.com/realms/bexio/protocol/openid-connect/token';
-const SCOPES = 'openid offline_access kb_order_show kb_invoice_show kb_invoice_edit contact_show';
+// Required scopes per endpoint verified live against Marcus' bexio (2026-05):
+// - kb_order_show:    GET /kb_order, GET /kb_order/{id}
+// - kb_order_edit:    POST /kb_order/{id}/repetition  (creates invoice from order — required!)
+// - kb_invoice_show:  GET /kb_invoice/{id} (for crash-recovery reconciliation)
+// - kb_invoice_edit:  POST /kb_invoice/{id}/issue, POST /kb_invoice/{id}/send
+// - contact_show:     GET /contact/{id} (for resolving customer names)
+const SCOPES = 'openid offline_access kb_order_show kb_order_edit kb_invoice_show kb_invoice_edit contact_show';
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
   console.error('Missing BEXIO_CLIENT_ID or BEXIO_CLIENT_SECRET in .env.local');

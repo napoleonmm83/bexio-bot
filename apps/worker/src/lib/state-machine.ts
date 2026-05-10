@@ -63,9 +63,32 @@ export async function processOrder(
   try {
     invoice = await createInvoiceFromOrder(accessToken, { order_id: order.bexioOrderId });
   } catch (err) {
-    if (err instanceof BexioApiError && err.errorClass === 'permanent') {
-      // bexio's "not due yet" lives in 4xx-permanent — extract message for the run log
-      return { kind: 'not_due', reason: err.body.slice(0, 200) };
+    if (err instanceof BexioApiError) {
+      // 403 = scope mismatch or permission denied. Distinct from "not due".
+      // Body usually mentions "not allowed" or "permission".
+      if (err.status === 403) {
+        return {
+          kind: 'failed',
+          reason: `scope/permission denied — bexio 403: ${err.body.slice(0, 150)}. Likely missing kb_order_edit scope; re-auth needed.`,
+          bexioStatus: 403,
+        };
+      }
+      // 401 = token invalid. Worker should refresh first, but the catch-net is here too.
+      if (err.status === 401) {
+        return {
+          kind: 'failed',
+          reason: `token invalid — bexio 401. Run bun run oauth-setup to re-auth.`,
+          bexioStatus: 401,
+        };
+      }
+      // 4xx-permanent that aren't auth: most likely "no repetition due" or
+      // "invalid order state". Treat as not_due — recurring will retry tomorrow.
+      // bexio's "not due" responses typically include phrases like "not_due",
+      // "no repetition" or "nothing to invoice" — we don't pattern-match to keep
+      // the heuristic loose; the differentiation 401/403 above catches the auth case.
+      if (err.errorClass === 'permanent') {
+        return { kind: 'not_due', reason: err.body.slice(0, 200) };
+      }
     }
     return {
       kind: 'failed',
