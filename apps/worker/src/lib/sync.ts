@@ -5,7 +5,12 @@
 import { eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { recurringOrders } from '@bexio-bot/db';
-import { listRecurringOrders, type BexioOrder } from '@bexio-bot/bexio-client';
+import {
+  listRecurringOrders,
+  getContact,
+  formatContactName,
+  type BexioOrder,
+} from '@bexio-bot/bexio-client';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -32,9 +37,23 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   let alreadyTracked = 0;
   const newOrders: SyncResult['newOrders'] = [];
 
+  // Cache contacts so two orders from the same customer don't trigger two API calls
+  const contactCache = new Map<number, string>();
+
   for (const o of orders) {
     const interval = inferInterval(o);
-    const customerName = o.title || `Auftrag #${o.document_nr}`;
+
+    let customerName = contactCache.get(o.contact_id);
+    if (!customerName) {
+      try {
+        const contact = await getContact(accessToken, o.contact_id);
+        customerName = formatContactName(contact);
+      } catch {
+        // bexio returned an error fetching the contact; fall back to order metadata.
+        customerName = o.title || `Auftrag #${o.document_nr}`;
+      }
+      contactCache.set(o.contact_id, customerName);
+    }
 
     // INSERT ... ON CONFLICT — if row exists, only refresh the cache fields
     // (synced_at, customer_name, expected amount). Never touch `enabled`.

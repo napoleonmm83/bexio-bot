@@ -43,6 +43,30 @@ export type BexioOrder = {
   is_valid_from?: string;
 };
 
+// ─── contact ───────────────────────────────────────────────
+
+/**
+ * bexio contact. contact_type_id: 1 = company (Firma), 2 = person (Privatperson).
+ * Display name: firms use name_1; persons use "name_2 name_1" (Vorname Nachname).
+ */
+export type BexioContact = {
+  id: number;
+  contact_type_id: number;
+  name_1: string;
+  name_2?: string | null;
+  salutation_id?: number | null;
+  mail?: string | null;
+  updated_at: string;
+};
+
+export function formatContactName(c: BexioContact): string {
+  const isPerson = c.contact_type_id === 2;
+  if (isPerson && c.name_2) {
+    return `${c.name_2} ${c.name_1}`.trim();
+  }
+  return c.name_1.trim() || `Kontakt #${c.id}`;
+}
+
 // ─── kb_invoice ───────────────────────────────────────────
 
 export type BexioInvoice = {

@@ -147,7 +147,7 @@
                 <tr>
                   <td class="client">
                     {o.customerName}
-                    <span class="meta-row">bexio Auftrag #{o.bexioOrderId} · synced {formatTime(o.syncedAt)}</span>
+                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId} · synced {formatTime(o.syncedAt)}</span>
                   </td>
                   <td><span class="badge muted">{o.interval}</span></td>
                   <td class="amount">CHF {formatAmount(o.expectedAmount)}</td>
@@ -182,7 +182,7 @@
                 <tr>
                   <td class="client">
                     {o.customerName}
-                    <span class="meta-row">bexio Auftrag #{o.bexioOrderId} · synced {formatTime(o.syncedAt)}</span>
+                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId} · synced {formatTime(o.syncedAt)}</span>
                   </td>
                   <td><span class="badge">{o.interval}</span></td>
                   <td class="amount">CHF {formatAmount(o.expectedAmount)}</td>
