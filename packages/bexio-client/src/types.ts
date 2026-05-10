@@ -127,14 +127,20 @@ export type MappedBexioStatus = 'open' | 'partial' | 'done' | 'canceled' | 'unkn
 
 /**
  * Translate bexio's kb_item_status_id to a stable enum.
- * Status IDs vary per account; this is the mapping verified against Marcus' bexio.
- * Add new IDs here if the discovery script (test-bexio.ts) surfaces them.
+ * IDs verified live against Marcus' bexio (2026-05-10):
+ *   5  → open      (offen — initial state)
+ *   6  → done      (erledigt — fully invoiced)
+ *   15 → partial   (teilweise — partially invoiced, recurring not yet done)
+ *   21 → canceled  (storniert)
+ *
+ * Add new IDs here as we discover them. Bexio's status IDs may vary per
+ * account so this mapping is account-specific verified data.
  */
 export function mapBexioStatus(statusId: number | undefined | null): MappedBexioStatus {
   switch (statusId) {
     case 5:  return 'open';
     case 6:  return 'done';
-    case 7:  return 'partial';   // tentative — bexio's "Teilweise" tab; verify when first seen
+    case 15: return 'partial';   // bexio's "Teilweise" tab — partially invoiced
     case 21: return 'canceled';
     default: return 'unknown';
   }

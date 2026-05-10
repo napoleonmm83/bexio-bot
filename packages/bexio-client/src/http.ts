@@ -47,15 +47,21 @@ export async function callBexio<T>(path: string, opts: ApiCallOptions): Promise<
     }
   }
 
-  const res = await fetch(url, {
+  // Build init conditionally — bexio's POST /kb_order/{id}/invoice returns 415
+  // if the request has ANY body (even an empty string or undefined that Bun
+  // might serialize as Content-Length: 0). Omit the key entirely instead.
+  const init: RequestInit = {
     method: opts.method ?? 'GET',
     headers: {
       Authorization: `Bearer ${opts.accessToken}`,
       Accept: 'application/json',
       ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
     },
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-  });
+  };
+  if (opts.body !== undefined) {
+    init.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(url, init);
 
   if (!res.ok) {
     const bodyText = await res.text();
