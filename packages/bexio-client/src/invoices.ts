@@ -8,25 +8,33 @@ import { callBexio } from './http.ts';
 import type { BexioInvoice, CreateInvoiceFromOrderInput } from './types.ts';
 
 /**
- * Create an invoice from an existing recurring order.
- * Bexio's endpoint: POST /kb_order/{id}/repetition  (creates next billing period invoice)
+ * Create an invoice from an existing order.
+ * Endpoint: POST /kb_order/{id}/invoice — verified live 2026-05-10.
  *
- * NOTE: There are two patterns in bexio for creating invoices from orders:
- *   1. POST /kb_order/{id}/repetition — bexio's "auto" path, creates the next due invoice
- *   2. POST /kb_invoice with copy-from-order parameters — manual path
+ * IMPORTANT: do NOT send a JSON body. bexio's parser returns 415 "Could not parse
+ * the data" if Content-Type is application/json with anything except an empty
+ * payload. The right call is POST with no body and no Content-Type.
  *
- * We use #1 because it lets bexio compute the right billing period itself, matching
- * what the order's repetition config says. If the bot's notion of "due today" disagrees
- * with bexio's repetition state, bexio wins (server is the source of truth).
+ * Status semantics:
+ *   200/201 → invoice created, returns BexioInvoice
+ *   422 "order is fully invoiced" → caller should treat as not_due
+ *                                   (bexio refuses because the next billing
+ *                                    period hasn't arrived yet, OR because
+ *                                    Marcus created the first invoice manually
+ *                                    when setting up the recurring order)
+ *
+ * Bexio decides "due or not" itself based on the order's repetition config. The
+ * bot polls daily and lets bexio be the source-of-truth for billing periods.
  */
 export async function createInvoiceFromOrder(
   accessToken: string,
   input: CreateInvoiceFromOrderInput,
 ): Promise<BexioInvoice> {
-  return callBexio<BexioInvoice>(`/kb_order/${input.order_id}/repetition`, {
+  return callBexio<BexioInvoice>(`/kb_order/${input.order_id}/invoice`, {
     accessToken,
     method: 'POST',
-    body: {},
+    // No body — bexio's parser is strict here. callBexio() omits Content-Type
+    // when body is undefined.
   });
 }
 
