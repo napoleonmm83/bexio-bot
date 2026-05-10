@@ -26,6 +26,8 @@ import {
   issueInvoice,
   sendInvoice,
   getInvoice,
+  getOrderRepetition,
+  isSupportedBexioInterval,
   BexioApiError,
   type BexioInvoice,
 } from '@bexio-bot/bexio-client';
@@ -41,6 +43,7 @@ export type ProcessOrderResult =
   | { kind: 'sent'; invoiceId: number; amount: string; billingPeriod: string }
   | { kind: 'not_due'; reason: string }
   | { kind: 'skipped_duplicate'; existingInvoiceId: number; billingPeriod: string }
+  | { kind: 'skipped_unsupported'; bexioType: string }
   | { kind: 'failed'; reason: string; bexioStatus?: number; invoiceId?: number };
 
 export type OrderInput = {
@@ -58,6 +61,20 @@ export async function processOrder(
   accessToken: string,
   order: OrderInput,
 ): Promise<ProcessOrderResult> {
+  // Step 0: safety check — refuse to bill unsupported intervals (weekly/daily/custom).
+  // Bot would otherwise create a monthly invoice for an order Marcus configured weekly.
+  try {
+    const rep = await getOrderRepetition(accessToken, order.bexioOrderId);
+    if (!isSupportedBexioInterval(rep)) {
+      return {
+        kind: 'skipped_unsupported',
+        bexioType: rep?.repetition?.type ?? 'unknown',
+      };
+    }
+  } catch {
+    // If we can't fetch repetition, fall through to bexio — it'll tell us via 4xx.
+  }
+
   // Step 1: ask bexio to create the next invoice
   let invoice: BexioInvoice;
   try {

@@ -37,7 +37,13 @@ export const invoiceRunStatusEnum = pgEnum('invoice_run_status', [
   'failed',
 ]);
 
+/**
+ * Canonical billing interval for the bot. Bexio's native types are daily/weekly/
+ * monthly/yearly; quarterly/semi_annual are bexio's monthly + interval=3 or 6.
+ */
 export const recurringIntervalEnum = pgEnum('recurring_interval', [
+  'daily',
+  'weekly',
   'monthly',
   'quarterly',
   'semi_annual',

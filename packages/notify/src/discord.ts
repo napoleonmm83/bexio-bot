@@ -28,7 +28,7 @@ export type DiscordRunReport = {
   finishedAt: Date;
   results: Array<{
     customerName: string;
-    kind: 'sent' | 'not_due' | 'skipped_duplicate' | 'failed';
+    kind: 'sent' | 'not_due' | 'skipped_duplicate' | 'skipped_unsupported' | 'failed';
     invoiceId?: number;
     amount?: string;
     billingPeriod?: string;
@@ -117,6 +117,13 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
       name: `↺ ${truncate(d.customerName, 64)}`,
       value: `bereits erstellt für ${d.billingPeriod ?? '(unbekannt)'}`,
       inline: true,
+    });
+  }
+  for (const u of r.results.filter((x) => x.kind === 'skipped_unsupported')) {
+    fields.push({
+      name: `⚠ ${truncate(u.customerName, 64)}`,
+      value: u.reason ?? 'unterstütztes Interval',
+      inline: false,
     });
   }
   for (const f of failed) {

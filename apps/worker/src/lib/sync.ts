@@ -12,6 +12,7 @@ import {
   formatContactName,
   mapBexioStatus,
   mapRepetitionToInterval,
+  isSupportedBexioInterval,
   type BexioOrderRepetition,
 } from '@bexio-bot/bexio-client';
 import { computeNextBilling } from './next-billing.ts';
@@ -24,6 +25,9 @@ export type SyncResult = {
   newlyAdded: number;
   alreadyTracked: number;
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
+  /** Orders whose bexio repetition.type is unsupported (weekly/daily/custom).
+   *  Bot won't process them — Marcus needs to handle them manually in bexio. */
+  unsupportedOrders: Array<{ bexioOrderId: number; customerName: string; bexioType: string }>;
 };
 
 export async function syncRecurringOrders(db: Db, accessToken: string): Promise<SyncResult> {
@@ -32,6 +36,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   let newlyAdded = 0;
   let alreadyTracked = 0;
   const newOrders: SyncResult['newOrders'] = [];
+  const unsupportedOrders: SyncResult['unsupportedOrders'] = [];
 
   // Cache contacts so two orders from the same customer don't trigger two API calls
   const contactCache = new Map<number, string>();
@@ -40,10 +45,14 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
     // Fetch repetition config — bexio doesn't include it in the order body
     let interval: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
     let nextBillingDate: Date;
+    let unsupportedType: string | undefined;
     try {
       const rep = await getOrderRepetition(accessToken, o.id);
       interval = mapRepetitionToInterval(rep);
-      nextBillingDate = computeNextBilling(rep) ?? new Date(); // null → fall through to today
+      nextBillingDate = computeNextBilling(rep) ?? new Date();
+      if (!isSupportedBexioInterval(rep)) {
+        unsupportedType = rep?.repetition?.type ?? 'unknown';
+      }
     } catch {
       // /repetition can 404 for non-recurring orders; we filter is_recurring=true upstream
       // so this should be rare. Fall back to monthly + today as the safest default.
@@ -102,9 +111,13 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
     } else {
       alreadyTracked += 1;
     }
+
+    if (unsupportedType) {
+      unsupportedOrders.push({ bexioOrderId: o.id, customerName, bexioType: unsupportedType });
+    }
   }
 
-  return { total: orders.length, newlyAdded, alreadyTracked, newOrders };
+  return { total: orders.length, newlyAdded, alreadyTracked, newOrders, unsupportedOrders };
 }
 
 /**

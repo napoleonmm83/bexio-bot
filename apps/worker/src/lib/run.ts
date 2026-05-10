@@ -125,6 +125,7 @@ export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<Ru
         : {}),
       ...(r.result.kind === 'failed' ? { reason: r.result.reason } : {}),
       ...(r.result.kind === 'not_due' ? { reason: r.result.reason } : {}),
+      ...(r.result.kind === 'skipped_unsupported' ? { reason: `bexio type "${r.result.bexioType}" nicht unterstützt` } : {}),
     })),
   });
 

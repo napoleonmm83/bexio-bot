@@ -69,6 +69,8 @@ try {
         console.log(`    existing invoice ${r.result.existingInvoiceId} period ${r.result.billingPeriod}`);
       } else if (r.result.kind === 'failed') {
         console.log(`    reason: ${r.result.reason}`);
+      } else if (r.result.kind === 'skipped_unsupported') {
+        console.log(`    bexio type "${r.result.bexioType}" wird vom Bot nicht unterstützt — bitte manuell in bexio bearbeiten`);
       }
     }
     console.log('');
@@ -106,6 +108,7 @@ function symbolFor(kind: string): string {
     case 'sent': return '✓';
     case 'not_due': return '·';
     case 'skipped_duplicate': return '↺';
+    case 'skipped_unsupported': return '⚠';
     case 'failed': return '✗';
     default: return '?';
   }

@@ -7,6 +7,12 @@
 
 import type { BexioOrderRepetition } from '@bexio-bot/bexio-client';
 
+const WEEKDAY_INDEX: Record<string, number> = {
+  // bexio uses lowercase English names. JS Date.getDay() returns 0=Sunday..6=Saturday.
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+};
+
 const TZ = 'Europe/Zurich';
 
 type Parts = { y: number; m: number; d: number };
@@ -58,8 +64,15 @@ function addInterval(parts: Parts, type: string, interval: number): Parts {
   if (type === 'quarterly') return addMonths(parts, 3 * interval);
   if (type === 'half_year') return addMonths(parts, 6 * interval);
   if (type === 'monthly') return addMonths(parts, interval);
+  if (type === 'daily') return addDays(parts, interval);
+  // weekly handled separately in computeNextBilling — needs weekdays array
   // Unknown type — bump by one month as a safe default
   return addMonths(parts, 1);
+}
+
+function addDays(parts: Parts, days: number): Parts {
+  const d = new Date(Date.UTC(parts.y, parts.m - 1, parts.d + days));
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };
 }
 
 function addMonths(parts: Parts, months: number): Parts {
@@ -95,14 +108,38 @@ export function computeNextBilling(
 ): Date | null {
   if (!rep?.start || !rep.repetition) return null;
 
-  const { type, interval, schedule } = rep.repetition;
+  const r = rep.repetition;
+  const { type, interval, schedule } = r;
   if (!type || interval < 1) return null;
 
   const today = getZurichParts(now);
-  let candidate = applySchedule(getZurichParts(rep.start), schedule);
 
-  // Walk forward until candidate is strictly after today
-  let safetyBudget = 600; // 50 years of monthly intervals — defensive cap
+  // Weekly is special: rather than walking by N weeks, we walk day-by-day and
+  // pick the next date that lands on one of the configured weekdays.
+  if (type === 'weekly') {
+    const weekdays = (r.weekdays as string[] | undefined) ?? [];
+    if (weekdays.length === 0) return null;
+    const targetDays = new Set(
+      weekdays.map((w) => WEEKDAY_INDEX[w.toLowerCase()]).filter((n): n is number => n !== undefined),
+    );
+    if (targetDays.size === 0) return null;
+
+    let cursor = getZurichParts(rep.start);
+    // Walk forward day-by-day up to 7 × interval days (safety: 365)
+    for (let i = 0; i < 365; i++) {
+      const utc = new Date(Date.UTC(cursor.y, cursor.m - 1, cursor.d));
+      const dow = utc.getUTCDay();
+      if (isAfter(cursor, today) && targetDays.has(dow)) {
+        return zurichDayToUtcDate(cursor);
+      }
+      cursor = addDays(cursor, 1);
+    }
+    return null;
+  }
+
+  // daily / monthly / quarterly / half_year / yearly all use interval-stepping
+  let candidate = applySchedule(getZurichParts(rep.start), schedule);
+  let safetyBudget = 3650; // 10 years of daily intervals — defensive cap
   while (!isAfter(candidate, today) && safetyBudget-- > 0) {
     candidate = applySchedule(addInterval(candidate, type, interval), schedule);
   }

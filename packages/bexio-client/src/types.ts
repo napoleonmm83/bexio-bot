@@ -49,32 +49,59 @@ export type BexioOrderRepetition = {
     type: string;
     interval: number;
     schedule?: string;
+    /** Required when type === 'weekly'. Lowercase English day names. */
+    weekdays?: string[];
   } | null;
 };
 
 /**
  * Translate bexio's repetition config to our canonical interval enum.
- * Hierarchy: type comes first, interval is a multiplier-override for monthly.
+ *
+ * Bexio API supports exactly four type values (verified live 2026-05-10 via probe):
+ *   daily, weekly, monthly, yearly
+ *
+ * Quarterly and semi-annual don't exist as native bexio types — they're configured
+ * as monthly with interval=3 or interval=6. Our enum surfaces them as distinct
+ * values for clearer UI display.
  */
+export type CanonicalInterval =
+  | 'daily'
+  | 'weekly'
+  | 'monthly'
+  | 'quarterly'
+  | 'semi_annual'
+  | 'yearly';
+
 export function mapRepetitionToInterval(
   rep: BexioOrderRepetition | null | undefined,
-): 'monthly' | 'quarterly' | 'semi_annual' | 'yearly' {
+): CanonicalInterval {
   const r = rep?.repetition;
   if (!r) return 'monthly'; // legacy fallback for orders with no /repetition response
 
   switch (r.type) {
-    case 'yearly':    return 'yearly';
-    case 'quarterly': return 'quarterly';
-    case 'half_year': return 'semi_annual';
+    case 'daily':  return 'daily';
+    case 'weekly': return 'weekly';
+    case 'yearly': return 'yearly';
     case 'monthly':
-      // interval=1 monthly, interval=3 = quarterly, interval=6 = semi_annual, interval=12 = yearly
+      // bexio monthly + interval multiplier maps to our finer enum values
       if (r.interval === 12) return 'yearly';
       if (r.interval === 6)  return 'semi_annual';
       if (r.interval === 3)  return 'quarterly';
       return 'monthly';
     default:
+      // Unknown future type — default to monthly so DB accepts it. Caller can
+      // detect via isSupportedBexioInterval() and skip in the state machine.
       return 'monthly';
   }
+}
+
+/**
+ * Returns true if bexio's repetition.type is one the bot can drive.
+ * All four native bexio types are supported.
+ */
+export function isSupportedBexioInterval(rep: BexioOrderRepetition | null | undefined): boolean {
+  const type = rep?.repetition?.type;
+  return type === 'daily' || type === 'weekly' || type === 'monthly' || type === 'yearly';
 }
 
 export type BexioOrder = {
