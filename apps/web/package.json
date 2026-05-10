@@ -1,0 +1,25 @@
+{
+  "name": "@bexio-bot/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bexio-bot/db": "workspace:*",
+    "@bexio-bot/bexio-client": "workspace:*",
+    "drizzle-orm": "^0.36.0"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "^5.2.9",
+    "@sveltejs/kit": "^2.8.0",
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "svelte": "^5.1.0",
+    "svelte-check": "^4.0.0",
+    "vite": "^5.4.0"
+  }
+}
