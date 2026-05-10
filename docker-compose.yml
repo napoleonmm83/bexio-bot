@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bexio-bot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bexiobot
+      POSTGRES_USER: bexiobot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev-only-change-in-prod}
+    ports:
+      - "5433:5432"  # 5433 to avoid clash with any locally-installed postgres on 5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bexiobot -d bexiobot"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:

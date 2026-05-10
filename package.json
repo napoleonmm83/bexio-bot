@@ -1,0 +1,26 @@
+{
+  "name": "bexio-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "worker": "bun run --filter @bexio-bot/worker start",
+    "worker:dry": "bun run --filter @bexio-bot/worker dry-run",
+    "db:generate": "bun run --filter @bexio-bot/db generate",
+    "db:migrate": "bun run --filter @bexio-bot/db migrate",
+    "db:studio": "bun run --filter @bexio-bot/db studio",
+    "lint": "bun run --filter '*' lint",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

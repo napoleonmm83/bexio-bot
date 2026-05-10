@@ -1,0 +1,51 @@
+# Added by code-review-graph
+.code-review-graph/
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build artifacts
+dist/
+build/
+.svelte-kit/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# OS
+desktop.ini
+
+# Database
+*.db
+*.sqlite
+postgres-data/
+
+# Drizzle migrations stay in repo (commit them!) — but skip generated meta caches
+drizzle/meta/_journal.json.bak
+
+# Local OAuth tokens (for spike + local dev only)
+oauth-tokens.json
+.bexio-tokens.json
+
+# Mockups dir is in ~/.gstack/, but in case it leaks here:
+mockups-tmp/

@@ -1,0 +1,16 @@
+{
+  "name": "@bexio-bot/worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "dry-run": "WORKER_DRY_RUN=true bun run src/cli.ts",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bexio-bot/db": "workspace:*",
+    "drizzle-orm": "^0.36.0",
+    "pino": "^9.5.0"
+  }
+}
