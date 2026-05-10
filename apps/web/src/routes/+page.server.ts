@@ -2,7 +2,7 @@
 // open invoices, and order admin lists. Uses Promise.allSettled so one failed query
 // doesn't blank the whole page.
 
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { PageServerLoad, Actions } from './$types.ts';
 import { getDb, recurringOrders, invoiceRuns, botRuns } from '@bexio-bot/db';
 
@@ -53,13 +53,30 @@ export const load: PageServerLoad = async () => {
     .where(inArray(recurringOrders.bexioStatus, ['done', 'canceled']))
     .orderBy(recurringOrders.customerName);
 
-  const [lastRunSettled, todaySettled, enabledSettled, disabledSettled, archivedSettled] =
+  // Fällig in den nächsten 30 Tagen (alle aktiven Aufträge, egal ob enabled — auch
+  // verfügbare zeigen wir hier, damit Marcus sieht was bexio bald erstellen müsste)
+  const today = new Date();
+  const in30Days = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const dueSoonPromise = db
+    .select()
+    .from(recurringOrders)
+    .where(
+      and(
+        inArray(recurringOrders.bexioStatus, [...PROCESSABLE]),
+        gte(recurringOrders.nextBillingDate, today),
+        lte(recurringOrders.nextBillingDate, in30Days),
+      ),
+    )
+    .orderBy(asc(recurringOrders.nextBillingDate));
+
+  const [lastRunSettled, todaySettled, enabledSettled, disabledSettled, archivedSettled, dueSoonSettled] =
     await Promise.allSettled([
       lastRunPromise,
       todayInvoicesPromise,
       enabledOrdersPromise,
       disabledOrdersPromise,
       archivedOrdersPromise,
+      dueSoonPromise,
     ]);
 
   return {
@@ -68,12 +85,14 @@ export const load: PageServerLoad = async () => {
     enabledOrders: enabledSettled.status === 'fulfilled' ? enabledSettled.value : [],
     disabledOrders: disabledSettled.status === 'fulfilled' ? disabledSettled.value : [],
     archivedOrders: archivedSettled.status === 'fulfilled' ? archivedSettled.value : [],
+    dueSoon: dueSoonSettled.status === 'fulfilled' ? dueSoonSettled.value : [],
     errors: [
       ...(lastRunSettled.status === 'rejected' ? [`lastRun: ${lastRunSettled.reason}`] : []),
       ...(todaySettled.status === 'rejected' ? [`todayInvoices: ${todaySettled.reason}`] : []),
       ...(enabledSettled.status === 'rejected' ? [`enabledOrders: ${enabledSettled.reason}`] : []),
       ...(disabledSettled.status === 'rejected' ? [`disabledOrders: ${disabledSettled.reason}`] : []),
       ...(archivedSettled.status === 'rejected' ? [`archivedOrders: ${archivedSettled.reason}`] : []),
+      ...(dueSoonSettled.status === 'rejected' ? [`dueSoon: ${dueSoonSettled.reason}`] : []),
     ],
   };
 };

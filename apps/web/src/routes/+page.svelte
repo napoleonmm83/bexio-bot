@@ -33,6 +33,28 @@
     return `vor ${Math.floor(seconds / 86400)}d`;
   }
 
+  function formatDate(d: Date | string | null | undefined): string {
+    if (!d) return '—';
+    const date = typeof d === 'string' ? new Date(d) : d;
+    return new Intl.DateTimeFormat('de-CH', {
+      timeZone: 'Europe/Zurich',
+      day: '2-digit', month: '2-digit', year: 'numeric',
+    }).format(date);
+  }
+
+  function daysUntil(d: Date | string | null | undefined): string {
+    if (!d) return '—';
+    const date = typeof d === 'string' ? new Date(d) : d;
+    const days = Math.ceil((date.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+    if (days < 0) return `${Math.abs(days)}d überfällig`;
+    if (days === 0) return 'heute';
+    if (days === 1) return 'morgen';
+    if (days < 7) return `in ${days}d`;
+    if (days < 14) return `in ${days}d`;
+    if (days < 60) return `in ${Math.round(days / 7)} Wochen`;
+    return `in ${Math.round(days / 30)} Monaten`;
+  }
+
   // Status indicator logic
   let statusKind = $derived.by(() => {
     if (!data.lastRun) return 'muted';
@@ -105,20 +127,26 @@
     </section>
 
     <section class="section">
-      <h2>Im Bot-Scope · aktiv</h2>
-      {#if data.enabledOrders.length === 0}
-        <p class="empty">Noch keine Aufträge aktiviert. Schau unten unter "Auftrags-Verwaltung".</p>
+      <h2>Fällig · nächste 30 Tage</h2>
+      {#if data.dueSoon.length === 0}
+        <p class="empty">Keine Aufträge fällig in den nächsten 30 Tagen.</p>
       {:else}
         <table>
-          <thead><tr><th>Kunde</th><th>Interval</th><th>Erwartet</th></tr></thead>
+          <thead><tr><th>Kunde</th><th>Fällig</th><th>Erwartet</th></tr></thead>
           <tbody>
-            {#each data.enabledOrders as o}
+            {#each data.dueSoon as o}
               <tr>
                 <td class="client">
                   {o.customerName}
-                  <span class="meta-row">bexio Auftrag #{o.bexioOrderId}</span>
+                  <span class="meta-row">
+                    Auftrag #{o.bexioOrderId} · {o.interval} ·
+                    {o.enabled ? 'aktiv' : 'noch nicht aktiv'}
+                  </span>
                 </td>
-                <td><span class="badge muted">{o.interval}</span></td>
+                <td>
+                  <span class="badge {o.enabled ? '' : 'muted'}">{daysUntil(o.nextBillingDate)}</span>
+                  <span class="meta-row">{formatDate(o.nextBillingDate)}</span>
+                </td>
                 <td class="amount">CHF {formatAmount(o.expectedAmount)}</td>
               </tr>
             {/each}
@@ -141,15 +169,19 @@
           <p class="empty">Alle bexio-Recurring-Aufträge sind im Bot-Scope.</p>
         {:else}
           <table>
-            <thead><tr><th>Kunde</th><th>Interval</th><th>Erwartet</th><th></th></tr></thead>
+            <thead><tr><th>Kunde</th><th>Interval</th><th>Nächste Fälligkeit</th><th>Erwartet</th><th></th></tr></thead>
             <tbody>
               {#each data.disabledOrders as o}
                 <tr>
                   <td class="client">
                     {o.customerName}
-                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId} · synced {formatTime(o.syncedAt)}</span>
+                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId}</span>
                   </td>
                   <td><span class="badge muted">{o.interval}</span></td>
+                  <td>
+                    {formatDate(o.nextBillingDate)}
+                    <span class="meta-row">{daysUntil(o.nextBillingDate)}</span>
+                  </td>
                   <td class="amount">CHF {formatAmount(o.expectedAmount)}</td>
                   <td>
                     <form method="POST" action="?/toggle" use:enhance>
@@ -176,15 +208,19 @@
           <p class="empty">Noch nichts aktiviert.</p>
         {:else}
           <table>
-            <thead><tr><th>Kunde</th><th>Interval</th><th>Erwartet</th><th></th></tr></thead>
+            <thead><tr><th>Kunde</th><th>Interval</th><th>Nächste Fälligkeit</th><th>Erwartet</th><th></th></tr></thead>
             <tbody>
               {#each data.enabledOrders as o}
                 <tr>
                   <td class="client">
                     {o.customerName}
-                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId} · synced {formatTime(o.syncedAt)}</span>
+                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId}</span>
                   </td>
                   <td><span class="badge">{o.interval}</span></td>
+                  <td>
+                    {formatDate(o.nextBillingDate)}
+                    <span class="meta-row">{daysUntil(o.nextBillingDate)}</span>
+                  </td>
                   <td class="amount">CHF {formatAmount(o.expectedAmount)}</td>
                   <td>
                     <form method="POST" action="?/toggle" use:enhance>

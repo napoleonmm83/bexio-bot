@@ -12,7 +12,9 @@ import {
   formatContactName,
   mapBexioStatus,
   mapRepetitionToInterval,
+  type BexioOrderRepetition,
 } from '@bexio-bot/bexio-client';
+import { computeNextBilling } from './next-billing.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -37,13 +39,16 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   for (const o of orders) {
     // Fetch repetition config — bexio doesn't include it in the order body
     let interval: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
+    let nextBillingDate: Date;
     try {
       const rep = await getOrderRepetition(accessToken, o.id);
       interval = mapRepetitionToInterval(rep);
+      nextBillingDate = computeNextBilling(rep) ?? new Date(); // null → fall through to today
     } catch {
       // /repetition can 404 for non-recurring orders; we filter is_recurring=true upstream
-      // so this should be rare. Fall back to monthly as the safest default.
+      // so this should be rare. Fall back to monthly + today as the safest default.
       interval = 'monthly';
+      nextBillingDate = new Date();
     }
 
     let customerName = contactCache.get(o.contact_id);
@@ -70,7 +75,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         customerName,
         interval,
         expectedAmount: o.total,
-        nextBillingDate: new Date(), // placeholder — bexio is source-of-truth, see Ansatz A
+        nextBillingDate,
         enabled: false,
         bexioStatus,
         bexioStatusId: o.kb_item_status_id ?? null,
@@ -80,8 +85,9 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         target: recurringOrders.bexioOrderId,
         set: {
           customerName,
-          interval, // refresh: Marcus may switch a contract from monthly to yearly in bexio
+          interval,
           expectedAmount: o.total,
+          nextBillingDate, // refresh — start date may shift in bexio
           bexioStatus,
           bexioStatusId: o.kb_item_status_id ?? null,
           syncedAt: new Date(),
