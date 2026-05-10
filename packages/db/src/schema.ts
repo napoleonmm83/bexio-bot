@@ -22,6 +22,7 @@ import {
   primaryKey,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 // ── Enums ─────────────────────────────────────────────────────
 
@@ -63,9 +64,10 @@ export const recurringOrders = pgTable(
     syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    // Partial index: only enabled rows. Worker scans this every cron run.
     nextBillingIdx: index('idx_recurring_orders_next_billing')
       .on(t.nextBillingDate)
-      .where(t.enabled), // Partial index: only enabled rows
+      .where(sql`enabled = true`),
   }),
 );
 
@@ -90,9 +92,10 @@ export const invoiceRuns = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.orderId, t.billingPeriod] }),
+    // Partial index for in-flight rows only — small, exactly the crash-recovery scan pattern.
     statusLockIdx: index('idx_invoice_runs_status_lock')
       .on(t.status, t.lockAcquiredAt)
-      .where(t.status), // partial index for crash-recovery scans
+      .where(sql`status IN ('creating', 'issuing', 'sending')`),
   }),
 );
 

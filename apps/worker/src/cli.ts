@@ -14,9 +14,9 @@ console.log('  WORKER_TZ:      ', process.env.WORKER_TZ ?? '(not set, defaulting
 try {
   const db = getDb();
   const result = await db.execute(sql`SELECT version() as version, now() as now`);
-  const row = result[0] as { version: string; now: Date };
+  const row = result[0] as { version: string; now: string | Date };
   console.log('  postgres:       ', row.version.split(',')[0]);
-  console.log('  postgres now:   ', row.now.toISOString());
+  console.log('  postgres now:   ', new Date(row.now).toISOString());
   console.log('OK — stack works.');
 } catch (err) {
   console.error('FAIL — stack check failed:', err instanceof Error ? err.message : err);

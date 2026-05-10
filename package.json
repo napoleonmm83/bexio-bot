@@ -8,12 +8,11 @@
     "packages/*"
   ],
   "scripts": {
-    "worker": "bun run --filter @bexio-bot/worker start",
-    "worker:dry": "bun run --filter @bexio-bot/worker dry-run",
-    "db:generate": "bun run --filter @bexio-bot/db generate",
-    "db:migrate": "bun run --filter @bexio-bot/db migrate",
-    "db:studio": "bun run --filter @bexio-bot/db studio",
-    "lint": "bun run --filter '*' lint",
+    "worker": "bun run apps/worker/src/cli.ts",
+    "worker:dry": "WORKER_DRY_RUN=true bun run apps/worker/src/cli.ts",
+    "db:generate": "bun run --cwd packages/db drizzle-kit generate",
+    "db:migrate": "bun run packages/db/src/migrate.ts",
+    "db:studio": "bun run --cwd packages/db drizzle-kit studio",
     "test": "bun test"
   },
   "devDependencies": {
