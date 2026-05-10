@@ -30,6 +30,7 @@ export type RunSummary = {
   finishedAt: Date;
   syncTotal: number;
   syncNewlyAdded: number;
+  removedOrders: number;
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
   reconciledSent: number;
   reconciledIssued: number;
@@ -135,6 +136,7 @@ export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<Ru
     finishedAt,
     syncTotal: sync.total,
     syncNewlyAdded: sync.newlyAdded,
+    removedOrders: sync.removedOrders,
     newOrders: sync.newOrders,
     reconciledSent: reconcile.reconciledSent,
     reconciledIssued: reconcile.reconciledIssued,

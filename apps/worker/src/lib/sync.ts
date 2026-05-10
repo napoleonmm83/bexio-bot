@@ -2,7 +2,7 @@
 // Rule: new orders inserted with enabled=false (Marcus opts in via dashboard).
 // Existing orders preserve their enabled flag.
 
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { recurringOrders } from '@bexio-bot/db';
 import {
@@ -24,6 +24,8 @@ export type SyncResult = {
   total: number;
   newlyAdded: number;
   alreadyTracked: number;
+  /** Orders removed because they no longer exist (or no longer have is_recurring=true) in bexio. */
+  removedOrders: number;
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
   /** Orders whose bexio repetition.type is unsupported (weekly/daily/custom).
    *  Bot won't process them — Marcus needs to handle them manually in bexio. */
@@ -37,11 +39,13 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   let alreadyTracked = 0;
   const newOrders: SyncResult['newOrders'] = [];
   const unsupportedOrders: SyncResult['unsupportedOrders'] = [];
+  const seenIds = new Set<number>();
 
   // Cache contacts so two orders from the same customer don't trigger two API calls
   const contactCache = new Map<number, string>();
 
   for (const o of orders) {
+    seenIds.add(o.id);
     // Fetch repetition config — bexio doesn't include it in the order body
     let interval: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
     let nextBillingDate: Date;
@@ -117,7 +121,18 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
     }
   }
 
-  return { total: orders.length, newlyAdded, alreadyTracked, newOrders, unsupportedOrders };
+  // Clean up orphans: orders that used to be in bexio but are gone now
+  // (deleted, status changed so they're no longer is_recurring, etc.)
+  // invoice_runs has no FK back to recurring_orders so orphan rows there are fine.
+  let removedOrders = 0;
+  const seenArray = [...seenIds];
+  const deleteCondition = seenArray.length > 0
+    ? notInArray(recurringOrders.bexioOrderId, seenArray)
+    : sql`true`; // if bexio returns zero orders, wipe everything (rare)
+  const deleted = await db.delete(recurringOrders).where(deleteCondition).returning({ id: recurringOrders.bexioOrderId });
+  removedOrders = deleted.length;
+
+  return { total: orders.length, newlyAdded, alreadyTracked, removedOrders, newOrders, unsupportedOrders };
 }
 
 /**

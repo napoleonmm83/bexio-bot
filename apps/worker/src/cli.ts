@@ -47,6 +47,9 @@ try {
         console.log(`    + #${n.bexioOrderId} ${n.customerName} (${n.interval})`);
       }
     }
+    if (summary.removedOrders > 0) {
+      console.log('  removed (no longer in bexio):', summary.removedOrders);
+    }
     console.log('');
     console.log('Crash recovery:');
     console.log('  reconciled to sent:  ', summary.reconciledSent);
