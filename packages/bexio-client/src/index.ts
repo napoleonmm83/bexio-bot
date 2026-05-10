@@ -9,6 +9,7 @@ export { createInvoiceFromOrder, issueInvoice, sendInvoice, getInvoice } from '.
 export {
   BexioApiError,
   formatContactName,
+  mapBexioStatus,
   type BexioOrder,
   type BexioInvoice,
   type BexioContact,
@@ -16,4 +17,5 @@ export {
   type RecurringInterval,
   type CreateInvoiceFromOrderInput,
   type BexioErrorClass,
+  type MappedBexioStatus,
 } from './types.ts';

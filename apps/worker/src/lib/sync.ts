@@ -2,13 +2,14 @@
 // Rule: new orders inserted with enabled=false (Marcus opts in via dashboard).
 // Existing orders preserve their enabled flag.
 
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { recurringOrders } from '@bexio-bot/db';
 import {
   listRecurringOrders,
   getContact,
   formatContactName,
+  mapBexioStatus,
   type BexioOrder,
 } from '@bexio-bot/bexio-client';
 
@@ -55,8 +56,10 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
       contactCache.set(o.contact_id, customerName);
     }
 
-    // INSERT ... ON CONFLICT — if row exists, only refresh the cache fields
-    // (synced_at, customer_name, expected amount). Never touch `enabled`.
+    const bexioStatus = mapBexioStatus(o.kb_item_status_id);
+
+    // INSERT ... ON CONFLICT — if row exists, refresh cache fields incl. status.
+    // Never touch `enabled` — that's the user's opt-in.
     const result = await db
       .insert(recurringOrders)
       .values({
@@ -67,6 +70,8 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         expectedAmount: o.total,
         nextBillingDate: new Date(), // placeholder — bexio is source-of-truth, see Ansatz A
         enabled: false,
+        bexioStatus,
+        bexioStatusId: o.kb_item_status_id ?? null,
         syncedAt: new Date(),
       })
       .onConflictDoUpdate({
@@ -74,6 +79,8 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         set: {
           customerName,
           expectedAmount: o.total,
+          bexioStatus,
+          bexioStatusId: o.kb_item_status_id ?? null,
           syncedAt: new Date(),
         },
       })
@@ -92,8 +99,20 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
 }
 
 /**
- * Get all enabled orders (the ones the worker actually processes).
+ * Get all orders the worker should actually process.
+ * Filters: enabled=true AND bexio status is open or partial.
+ * Done/canceled/unknown are skipped — done invoices are paid, canceled orders
+ * shouldn't be billed, unknown is a defensive default for new bexio status IDs
+ * we haven't mapped yet.
  */
 export async function getEnabledOrders(db: Db) {
-  return db.select().from(recurringOrders).where(eq(recurringOrders.enabled, true));
+  return db
+    .select()
+    .from(recurringOrders)
+    .where(
+      and(
+        eq(recurringOrders.enabled, true),
+        inArray(recurringOrders.bexioStatus, ['open', 'partial']),
+      ),
+    );
 }

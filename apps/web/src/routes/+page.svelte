@@ -200,6 +200,41 @@
         {/if}
       </div>
     </details>
+
+    <details class="disclosure">
+      <summary>
+        <span>Archiviert · in bexio erledigt oder storniert</span>
+        <span class="counter">{data.archivedOrders.length}</span>
+      </summary>
+      <div class="body">
+        {#if data.archivedOrders.length === 0}
+          <p class="empty">Keine archivierten Aufträge.</p>
+        {:else}
+          <table>
+            <thead><tr><th>Kunde</th><th>bexio-Status</th><th>Erwartet</th></tr></thead>
+            <tbody>
+              {#each data.archivedOrders as o}
+                <tr>
+                  <td class="client">
+                    {o.customerName}
+                    <span class="meta-row">Auftrag #{o.bexioOrderId} · Kunde #{o.customerId}</span>
+                  </td>
+                  <td>
+                    <span class="badge {o.bexioStatus === 'canceled' ? 'err' : 'muted'}">
+                      {o.bexioStatus === 'canceled' ? 'storniert' : 'erledigt'}
+                    </span>
+                  </td>
+                  <td class="amount">CHF {formatAmount(o.expectedAmount)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="empty" style="font-size: 12px; padding-top: 12px;">
+            Archivierte Aufträge werden vom Bot nicht bearbeitet, auch wenn sie aktiviert wären.
+          </p>
+        {/if}
+      </div>
+    </details>
   </section>
 
   <footer class="footer">

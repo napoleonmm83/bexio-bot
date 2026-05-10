@@ -37,11 +37,31 @@ export type BexioOrder = {
   total_gross?: string;
   total_net?: string;
   is_recurring: boolean;
+  /** kb_item_status_id — raw bexio status. Account-specific IDs.
+   *  Marcus' bexio: 5=open, 6=done, 21=canceled. Use mapBexioStatus() to translate. */
+  kb_item_status_id?: number;
   repetition?: BexioRepetition | null;
   api_reference?: string | null;
   updated_at: string; // 'YYYY-MM-DD HH:mm:ss'
   is_valid_from?: string;
 };
+
+export type MappedBexioStatus = 'open' | 'partial' | 'done' | 'canceled' | 'unknown';
+
+/**
+ * Translate bexio's kb_item_status_id to a stable enum.
+ * Status IDs vary per account; this is the mapping verified against Marcus' bexio.
+ * Add new IDs here if the discovery script (test-bexio.ts) surfaces them.
+ */
+export function mapBexioStatus(statusId: number | undefined | null): MappedBexioStatus {
+  switch (statusId) {
+    case 5:  return 'open';
+    case 6:  return 'done';
+    case 7:  return 'partial';   // tentative — bexio's "Teilweise" tab; verify when first seen
+    case 21: return 'canceled';
+    default: return 'unknown';
+  }
+}
 
 // ─── contact ───────────────────────────────────────────────
 

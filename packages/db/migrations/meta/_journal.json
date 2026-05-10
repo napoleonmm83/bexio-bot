@@ -8,6 +8,13 @@
       "when": 1778442449547,
       "tag": "0000_lovely_rogue",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1778445210783,
+      "tag": "0001_petite_shadowcat",
+      "breakpoints": true
     }
   ]
 }

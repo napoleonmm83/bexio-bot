@@ -44,6 +44,19 @@ export const recurringIntervalEnum = pgEnum('recurring_interval', [
   'yearly',
 ]);
 
+/**
+ * Mirrors bexio's kb_item_status_id (account-specific IDs) translated to a stable enum.
+ * Marcus' bexio: 5=open, 6=done, 21=canceled. Others remain 'unknown' until observed.
+ * Worker only processes orders where bexio_status IN ('open', 'partial').
+ */
+export const bexioStatusEnum = pgEnum('bexio_status', [
+  'open',
+  'partial',
+  'done',
+  'canceled',
+  'unknown',
+]);
+
 // ── Tables ─────────────────────────────────────────────────────
 
 /**
@@ -61,13 +74,15 @@ export const recurringOrders = pgTable(
     expectedAmount: text('expected_amount').notNull(), // CHF stored as string for exact decimals
     nextBillingDate: timestamp('next_billing_date', { withTimezone: true }).notNull(),
     enabled: boolean('enabled').notNull().default(false),
+    bexioStatus: bexioStatusEnum('bexio_status').notNull().default('unknown'),
+    bexioStatusId: integer('bexio_status_id'), // raw kb_item_status_id for forensics
     syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    // Partial index: only enabled rows. Worker scans this every cron run.
+    // Partial index: only enabled + processable rows. Worker scans this every cron run.
     nextBillingIdx: index('idx_recurring_orders_next_billing')
       .on(t.nextBillingDate)
-      .where(sql`enabled = true`),
+      .where(sql`enabled = true AND bexio_status IN ('open', 'partial')`),
   }),
 );
 

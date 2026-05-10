@@ -1,47 +1,49 @@
-// bexio-client smoke test. Verifies the real client (auth refresh + orders + invoices read).
-// Read-only: no /create, /issue, /send. Run anytime to confirm API is reachable.
-//
-// Usage: bun run test-bexio
+// Discovery script: dump kb_item_status_id values across recurring orders so we
+// know which IDs map to Offen/Teilweise/Erledigt/Storniert in this bexio account.
+// (kb_item_status IDs vary per account; safer to inspect than hardcode upstream defaults.)
 
-import { getDb, closeDb } from '@bexio-bot/db';
+import { eq } from 'drizzle-orm';
+import { getDb, secrets, closeDb } from '@bexio-bot/db';
 import {
   getValidAccessToken,
   listRecurringOrders,
-  getOrder,
+  getContact,
+  formatContactName,
   BexioApiError,
 } from '@bexio-bot/bexio-client';
 
 const db = getDb();
 
 try {
-  console.log('Step 1: refresh-aware getValidAccessToken()');
   const token = await getValidAccessToken(db);
-  console.log('  OK — token length:', token.length);
+
+  // Try discovering the status enum
+  console.log('Step 1: GET /2.0/kb_order_status (if it exists)');
+  const statusRes = await fetch('https://api.bexio.com/2.0/kb_order_status', {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  console.log('  status:', statusRes.status);
+  if (statusRes.ok) {
+    const statuses = await statusRes.json();
+    console.log('  body:', JSON.stringify(statuses, null, 2).slice(0, 800));
+  } else {
+    console.log('  (not available — fall back to per-order inspection)');
+  }
 
   console.log('');
-  console.log('Step 2: listRecurringOrders()');
+  console.log('Step 2: Per-order kb_item_status_id values');
   const orders = await listRecurringOrders(token);
-  console.log('  recurring orders:', orders.length);
-  for (const o of orders.slice(0, 5)) {
-    console.log(`  · #${o.id} ${o.document_nr} | ${o.title.slice(0, 40)} | total CHF ${o.total} | contact ${o.contact_id}`);
+  for (const o of orders) {
+    let name = `Auftrag #${o.document_nr}`;
+    try {
+      const contact = await getContact(token, o.contact_id);
+      name = formatContactName(contact);
+    } catch {}
+    // kb_item_status_id is in BexioOrder type but not in our public surface;
+    // cast here for inspection
+    const statusId = (o as { kb_item_status_id?: number }).kb_item_status_id;
+    console.log(`  · ${o.document_nr.padEnd(10)} status_id=${String(statusId).padEnd(4)} ${name}`);
   }
-  if (orders.length > 5) console.log(`  · … (${orders.length - 5} more)`);
-
-  if (orders.length > 0) {
-    console.log('');
-    console.log('Step 3: getOrder() — full detail of first recurring order');
-    const detail = await getOrder(token, orders[0]!.id);
-    console.log(`  id: ${detail.id}, document_nr: ${detail.document_nr}`);
-    console.log(`  is_recurring: ${detail.is_recurring}`);
-    if (detail.repetition) {
-      console.log('  repetition:', JSON.stringify(detail.repetition, null, 2).split('\n').map((l) => '    ' + l).join('\n'));
-    } else {
-      console.log('  repetition: (not present in detail response — may be on a separate endpoint)');
-    }
-  }
-
-  console.log('');
-  console.log('OK — bexio-client smoke test passed.');
 } catch (err) {
   if (err instanceof BexioApiError) {
     console.error(`FAIL — BexioApiError ${err.status} (${err.errorClass}):`, err.body.slice(0, 300));
