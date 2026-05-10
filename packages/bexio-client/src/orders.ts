@@ -1,7 +1,7 @@
 // kb_order endpoints. Recurring orders are the source for the daily worker run.
 
 import { callBexio } from './http.ts';
-import type { BexioOrder } from './types.ts';
+import type { BexioOrder, BexioOrderRepetition } from './types.ts';
 
 const PAGE_LIMIT = 200;
 
@@ -35,8 +35,21 @@ export async function listRecurringOrders(accessToken: string): Promise<BexioOrd
 }
 
 /**
- * Full detail for a single order. Use this to read repetition config before billing.
+ * Full detail for a single order. Note: does NOT include repetition config —
+ * bexio exposes that on a separate endpoint (see getOrderRepetition).
  */
 export async function getOrder(accessToken: string, orderId: number): Promise<BexioOrder> {
   return callBexio<BexioOrder>(`/kb_order/${orderId}`, { accessToken });
+}
+
+/**
+ * Get the repetition (recurring-billing) config for an order.
+ * Returns { start, repetition: { type, interval, schedule } }.
+ * Use mapRepetitionToInterval() to translate to our canonical enum.
+ */
+export async function getOrderRepetition(
+  accessToken: string,
+  orderId: number,
+): Promise<BexioOrderRepetition> {
+  return callBexio<BexioOrderRepetition>(`/kb_order/${orderId}/repetition`, { accessToken });
 }

@@ -19,13 +19,63 @@ export type RecurringInterval = 'monthly' | 'quarterly' | 'semi_annual' | 'yearl
  * Repetition config inside an order. Field names from bexio's API.
  * Reverse-engineered from observed responses; subject to drift.
  */
+/**
+ * Inline repetition info on a kb_order (rarely populated — see BexioOrderRepetition
+ * for the canonical representation returned from /kb_order/{id}/repetition).
+ */
 export type BexioRepetition = {
-  start_date?: string; // 'YYYY-MM-DD'
+  start_date?: string;
   end_date?: string | null;
-  type?: string; // bexio's own enum: 'monthly' | 'quarterly' | 'half_year' | 'yearly' or similar
-  every?: number; // e.g. every=3 means every 3 months
-  next_repetition_at?: string | null; // 'YYYY-MM-DD' — most useful field for the worker
+  type?: string;
+  every?: number;
+  next_repetition_at?: string | null;
 };
+
+/**
+ * Response shape of GET /kb_order/{id}/repetition (verified live, 2026-05).
+ *
+ * `type` values seen: 'monthly', 'yearly'. Bexio docs hint at 'quarterly' and 'half_year'
+ * but I haven't observed them; mapper falls back gracefully.
+ *
+ * `interval` is multiplier on `type`. Example: type='monthly' interval=3 → every 3 months.
+ *
+ * `schedule` controls within-period timing for monthly billing. Seen: 'last_day' (last
+ * day of month). Not relevant for our period mapping.
+ */
+export type BexioOrderRepetition = {
+  start?: string;
+  end?: string | null;
+  repetition?: {
+    type: string;
+    interval: number;
+    schedule?: string;
+  } | null;
+};
+
+/**
+ * Translate bexio's repetition config to our canonical interval enum.
+ * Hierarchy: type comes first, interval is a multiplier-override for monthly.
+ */
+export function mapRepetitionToInterval(
+  rep: BexioOrderRepetition | null | undefined,
+): 'monthly' | 'quarterly' | 'semi_annual' | 'yearly' {
+  const r = rep?.repetition;
+  if (!r) return 'monthly'; // legacy fallback for orders with no /repetition response
+
+  switch (r.type) {
+    case 'yearly':    return 'yearly';
+    case 'quarterly': return 'quarterly';
+    case 'half_year': return 'semi_annual';
+    case 'monthly':
+      // interval=1 monthly, interval=3 = quarterly, interval=6 = semi_annual, interval=12 = yearly
+      if (r.interval === 12) return 'yearly';
+      if (r.interval === 6)  return 'semi_annual';
+      if (r.interval === 3)  return 'quarterly';
+      return 'monthly';
+    default:
+      return 'monthly';
+  }
+}
 
 export type BexioOrder = {
   id: number;

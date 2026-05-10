@@ -7,22 +7,15 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { recurringOrders } from '@bexio-bot/db';
 import {
   listRecurringOrders,
+  getOrderRepetition,
   getContact,
   formatContactName,
   mapBexioStatus,
-  type BexioOrder,
+  mapRepetitionToInterval,
 } from '@bexio-bot/bexio-client';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
-
-// Bexio's `repetition.type` field — observed values, may need extension
-function inferInterval(_order: BexioOrder): 'monthly' | 'quarterly' | 'semi_annual' | 'yearly' {
-  // The /kb_order/{id} endpoint does not return repetition config (verified 2026-05).
-  // Default to 'monthly' for now; Phase 2 fetches per-order repetition via separate endpoint
-  // if it exists, or we infer from the bexio invoice's is_valid_from / is_valid_to delta.
-  return 'monthly';
-}
 
 export type SyncResult = {
   total: number;
@@ -42,7 +35,16 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   const contactCache = new Map<number, string>();
 
   for (const o of orders) {
-    const interval = inferInterval(o);
+    // Fetch repetition config — bexio doesn't include it in the order body
+    let interval: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
+    try {
+      const rep = await getOrderRepetition(accessToken, o.id);
+      interval = mapRepetitionToInterval(rep);
+    } catch {
+      // /repetition can 404 for non-recurring orders; we filter is_recurring=true upstream
+      // so this should be rare. Fall back to monthly as the safest default.
+      interval = 'monthly';
+    }
 
     let customerName = contactCache.get(o.contact_id);
     if (!customerName) {
@@ -78,6 +80,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         target: recurringOrders.bexioOrderId,
         set: {
           customerName,
+          interval, // refresh: Marcus may switch a contract from monthly to yearly in bexio
           expectedAmount: o.total,
           bexioStatus,
           bexioStatusId: o.kb_item_status_id ?? null,

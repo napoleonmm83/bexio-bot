@@ -3,17 +3,19 @@
 
 export { BEXIO_API_BASE, BEXIO_AUTH_BASE } from './http.ts';
 export { getValidAccessToken } from './auth.ts';
-export { listRecurringOrders, getOrder } from './orders.ts';
+export { listRecurringOrders, getOrder, getOrderRepetition } from './orders.ts';
 export { getContact } from './contacts.ts';
 export { createInvoiceFromOrder, issueInvoice, sendInvoice, getInvoice } from './invoices.ts';
 export {
   BexioApiError,
   formatContactName,
   mapBexioStatus,
+  mapRepetitionToInterval,
   type BexioOrder,
   type BexioInvoice,
   type BexioContact,
   type BexioRepetition,
+  type BexioOrderRepetition,
   type RecurringInterval,
   type CreateInvoiceFromOrderInput,
   type BexioErrorClass,
