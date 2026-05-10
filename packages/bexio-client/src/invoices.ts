@@ -49,18 +49,50 @@ export async function issueInvoice(accessToken: string, invoiceId: number): Prom
   });
 }
 
+export type SendInvoiceInput = {
+  recipientEmail: string;
+  subject: string;
+  /** Must contain the literal `[Network Link]` token — bexio refuses (422) otherwise.
+   *  The token is replaced server-side with a link to the invoice in bexio's customer portal. */
+  message: string;
+  attachPdf?: boolean;
+};
+
+const NETWORK_LINK_TOKEN = '[Network Link]';
+
 /**
  * Send invoice to customer via bexio's mail system.
- * Endpoint: POST /kb_invoice/{id}/send.
+ * Endpoint: POST /kb_invoice/{id}/send. Verified live 2026-05-11.
  *
- * Phase 1: no custom subject/body — uses bexio's default template.
- * Phase 3 (Mahnwesen): pre-Phase-2.5 spike will determine if custom mail body is supported.
+ * Required body fields (per official bexio API docs):
+ *   recipient_email, subject, message (must contain [Network Link]).
+ * Optional: mark_as_open (track opens), attach_pdf (attach the PDF directly).
+ *
+ * Returns 200 {"success":true}. Note: GET /kb_invoice/{id} after send may STILL
+ * show is_sent=undefined and kb_item_status_id=8 — that's a bexio read-back quirk.
+ * The actual send DID happen; verify in bexio UI or via mail receipt.
  */
-export async function sendInvoice(accessToken: string, invoiceId: number): Promise<void> {
+export async function sendInvoice(
+  accessToken: string,
+  invoiceId: number,
+  input: SendInvoiceInput,
+): Promise<void> {
+  // Defensive: ensure the [Network Link] token is in the message. If caller forgot,
+  // append it so the email is still valid and the link to the invoice is reachable.
+  const message = input.message.includes(NETWORK_LINK_TOKEN)
+    ? input.message
+    : `${input.message}\n\n${NETWORK_LINK_TOKEN}`;
+
   await callBexio<void>(`/kb_invoice/${invoiceId}/send`, {
     accessToken,
     method: 'POST',
-    body: {},
+    body: {
+      recipient_email: input.recipientEmail,
+      subject: input.subject,
+      message,
+      mark_as_open: true,
+      attach_pdf: input.attachPdf ?? true,
+    },
   });
 }
 

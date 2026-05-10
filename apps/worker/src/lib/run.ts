@@ -81,6 +81,7 @@ export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<Ru
       const result = await processOrder(db, accessToken, {
         bexioOrderId: o.bexioOrderId,
         customerName: o.customerName,
+        customerEmail: o.customerEmail,
       });
       results.push({ orderId: o.bexioOrderId, customerName: o.customerName, result });
     } catch (err) {

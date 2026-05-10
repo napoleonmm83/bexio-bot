@@ -42,7 +42,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   const seenIds = new Set<number>();
 
   // Cache contacts so two orders from the same customer don't trigger two API calls
-  const contactCache = new Map<number, string>();
+  const contactCache = new Map<number, { name: string; email: string | null }>();
 
   for (const o of orders) {
     seenIds.add(o.id);
@@ -64,17 +64,25 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
       nextBillingDate = new Date();
     }
 
-    let customerName = contactCache.get(o.contact_id);
-    if (!customerName) {
+    let cached = contactCache.get(o.contact_id);
+    if (!cached) {
       try {
         const contact = await getContact(accessToken, o.contact_id);
-        customerName = formatContactName(contact);
+        cached = {
+          name: formatContactName(contact),
+          email: contact.mail ?? null,
+        };
       } catch {
         // bexio returned an error fetching the contact; fall back to order metadata.
-        customerName = o.title || `Auftrag #${o.document_nr}`;
+        cached = {
+          name: o.title || `Auftrag #${o.document_nr}`,
+          email: null,
+        };
       }
-      contactCache.set(o.contact_id, customerName);
+      contactCache.set(o.contact_id, cached);
     }
+    const customerName = cached.name;
+    const customerEmail = cached.email;
 
     const bexioStatus = mapBexioStatus(o.kb_item_status_id);
 
@@ -86,6 +94,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         bexioOrderId: o.id,
         customerId: o.contact_id,
         customerName,
+        customerEmail,
         interval,
         expectedAmount: o.total,
         nextBillingDate,
@@ -98,6 +107,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         target: recurringOrders.bexioOrderId,
         set: {
           customerName,
+          customerEmail,
           interval,
           expectedAmount: o.total,
           nextBillingDate, // refresh — start date may shift in bexio

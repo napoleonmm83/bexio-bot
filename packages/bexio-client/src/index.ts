@@ -6,6 +6,7 @@ export { getValidAccessToken } from './auth.ts';
 export { listRecurringOrders, getOrder, getOrderRepetition } from './orders.ts';
 export { getContact } from './contacts.ts';
 export { createInvoiceFromOrder, issueInvoice, sendInvoice, getInvoice } from './invoices.ts';
+export type { SendInvoiceInput } from './invoices.ts';
 export {
   BexioApiError,
   formatContactName,

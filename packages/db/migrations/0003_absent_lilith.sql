@@ -1,0 +1,1 @@
+ALTER TABLE "recurring_orders" ADD COLUMN "customer_email" text;

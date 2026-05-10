@@ -76,6 +76,7 @@ export const recurringOrders = pgTable(
     bexioOrderId: integer('bexio_order_id').primaryKey(),
     customerId: integer('customer_id').notNull(),
     customerName: text('customer_name').notNull(),
+    customerEmail: text('customer_email'),
     interval: recurringIntervalEnum('interval').notNull(),
     expectedAmount: text('expected_amount').notNull(), // CHF stored as string for exact decimals
     nextBillingDate: timestamp('next_billing_date', { withTimezone: true }).notNull(),

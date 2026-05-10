@@ -20,7 +20,7 @@
 
 import { and, eq, lt, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
-import { invoiceRuns } from '@bexio-bot/db';
+import { invoiceRuns, recurringOrders } from '@bexio-bot/db';
 import {
   createInvoiceFromOrder,
   issueInvoice,
@@ -49,7 +49,25 @@ export type ProcessOrderResult =
 export type OrderInput = {
   bexioOrderId: number;
   customerName: string;
+  /** Used as recipient_email for /send. If null, /send fails with a clear error. */
+  customerEmail: string | null;
 };
+
+const MAIL_SUBJECT_TEMPLATE = 'Rechnung {document_nr}';
+const MAIL_MESSAGE_TEMPLATE = [
+  'Sehr geehrte Damen und Herren',
+  '',
+  'Im Anhang finden Sie unsere Rechnung {document_nr}.',
+  'Die Rechnung können Sie auch online einsehen: [Network Link]',
+  '',
+  'Bei Fragen stehen wir Ihnen gerne zur Verfügung.',
+  '',
+  'Freundliche Grüsse',
+].join('\n');
+
+function renderTemplate(template: string, vars: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
+}
 
 /**
  * Drive one order through the full pipeline in this run.
@@ -151,10 +169,27 @@ export async function processOrder(
     await issueInvoice(accessToken, invoice.id);
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issued', { issuedAt: new Date() });
 
+    if (!order.customerEmail) {
+      // Can't send without an email. Mark as failed so Marcus sees it and fixes
+      // the contact's email in bexio. The invoice is festgeschrieben (issued), so
+      // Marcus can also send it manually from bexio's UI.
+      throw new BexioApiError(
+        0,
+        'permanent',
+        `No customer email for ${order.customerName}. Update the contact in bexio.`,
+      );
+    }
+
+    const docNr = invoice.document_nr;
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'sending', {
       lockAcquiredAt: new Date(),
     });
-    await sendInvoice(accessToken, invoice.id);
+    await sendInvoice(accessToken, invoice.id, {
+      recipientEmail: order.customerEmail,
+      subject: renderTemplate(MAIL_SUBJECT_TEMPLATE, { document_nr: docNr }),
+      message: renderTemplate(MAIL_MESSAGE_TEMPLATE, { document_nr: docNr }),
+      attachPdf: true,
+    });
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'sent', {
       sentAt: new Date(),
       lockAcquiredAt: null,
@@ -294,11 +329,35 @@ export async function retryIssuedRows(db: Db, accessToken: string): Promise<numb
       continue;
     }
 
+    // Look up the order's customer email and document_nr for the send call
+    const orders = await db
+      .select()
+      .from(recurringOrders)
+      .where(eq(recurringOrders.bexioOrderId, row.orderId));
+    const order = orders[0];
+    if (!order?.customerEmail) {
+      await markFailed(
+        db,
+        row.orderId,
+        row.billingPeriod,
+        new Error('no_customer_email_on_retry'),
+      );
+      continue;
+    }
+
     try {
       await transitionTo(db, row.orderId, row.billingPeriod, 'sending', {
         lockAcquiredAt: new Date(),
       });
-      await sendInvoice(accessToken, row.invoiceId);
+      // We don't have document_nr cached, so look it up
+      const live = await getInvoice(accessToken, row.invoiceId);
+      const docNr = live.document_nr;
+      await sendInvoice(accessToken, row.invoiceId, {
+        recipientEmail: order.customerEmail,
+        subject: renderTemplate(MAIL_SUBJECT_TEMPLATE, { document_nr: docNr }),
+        message: renderTemplate(MAIL_MESSAGE_TEMPLATE, { document_nr: docNr }),
+        attachPdf: true,
+      });
       await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {
         sentAt: new Date(),
         lockAcquiredAt: null,
