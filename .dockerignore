@@ -1,0 +1,23 @@
+# Build context exclusions — anything that doesn't belong in the image.
+node_modules
+.svelte-kit
+**/build
+**/dist
+.git
+.gitignore
+.env
+.env.local
+.env.*.local
+*.md
+!**/Dockerfile
+.code-review-graph
+postgres-data
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+oauth-tokens.json
+.bexio-tokens.json
+mockups-tmp
