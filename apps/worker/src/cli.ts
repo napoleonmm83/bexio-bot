@@ -80,6 +80,18 @@ try {
       for (const e of summary.errors) console.log(`    ${e.stage} — ${e.message}`);
     }
     console.log('');
+    console.log('Notifications:');
+    if (summary.notifyResults.length === 0) {
+      console.log('  (no channels configured — set DISCORD_WEBHOOK_URL to enable)');
+    }
+    for (const n of summary.notifyResults) {
+      if (n.ok) {
+        console.log(`  ✓ ${n.channel}: delivered`);
+      } else {
+        console.log(`  ✗ ${n.channel}: ${'status' in n && n.status ? `${n.status} — ` : ''}${n.error}`);
+      }
+    }
+    console.log('');
     console.log(summary.errors.length ? 'DONE_WITH_ERRORS' : 'DONE');
   }
 } catch (err) {

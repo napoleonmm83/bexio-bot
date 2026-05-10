@@ -12,6 +12,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { botRuns } from '@bexio-bot/db';
 import { getValidAccessToken } from '@bexio-bot/bexio-client';
+import { notifyAll, type ChannelResult } from '@bexio-bot/notify';
 import { syncRecurringOrders, getEnabledOrders } from './sync.ts';
 import {
   processOrder,
@@ -39,6 +40,7 @@ export type RunSummary = {
   createdInvoicesCount: number;
   sentInvoicesCount: number;
   errors: Array<{ stage: string; message: string }>;
+  notifyResults: ChannelResult[];
 };
 
 export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<RunSummary> {
@@ -103,6 +105,29 @@ export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<Ru
     })
     .where(eq(botRuns.id, runId));
 
+  // ── 7. Fire-and-forget notifications ────────────────────────
+  // Promise.allSettled in notifyAll() ensures a failing channel never blocks the run.
+  const notifyResults = await notifyAll({
+    runId,
+    startedAt,
+    finishedAt,
+    enabledOrders: enabled.length,
+    newOrders: sync.newOrders,
+    errors,
+    results: results.map((r) => ({
+      customerName: r.customerName,
+      kind: r.result.kind,
+      ...(r.result.kind === 'sent'
+        ? { invoiceId: r.result.invoiceId, amount: r.result.amount, billingPeriod: r.result.billingPeriod }
+        : {}),
+      ...(r.result.kind === 'skipped_duplicate'
+        ? { invoiceId: r.result.existingInvoiceId, billingPeriod: r.result.billingPeriod }
+        : {}),
+      ...(r.result.kind === 'failed' ? { reason: r.result.reason } : {}),
+      ...(r.result.kind === 'not_due' ? { reason: r.result.reason } : {}),
+    })),
+  });
+
   return {
     runId,
     startedAt,
@@ -119,5 +144,6 @@ export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<Ru
     createdInvoicesCount: created,
     sentInvoicesCount: sent,
     errors,
+    notifyResults,
   };
 }

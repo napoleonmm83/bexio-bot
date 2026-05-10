@@ -12,6 +12,7 @@
     "worker:dry": "WORKER_DRY_RUN=true bun run apps/worker/src/cli.ts",
     "oauth-setup": "bun run apps/worker/src/oauth-setup.ts",
     "test-bexio": "bun run apps/worker/src/test-bexio.ts",
+    "test-discord": "bun run apps/worker/src/test-discord.ts",
     "db:generate": "bun run --cwd packages/db drizzle-kit generate",
     "db:migrate": "bun run packages/db/src/migrate.ts",
     "db:studio": "bun run --cwd packages/db drizzle-kit studio",
