@@ -44,16 +44,40 @@ export type RunSummary = {
   notifyResults: ChannelResult[];
 };
 
-export async function runDaily(db: Db, options: { dryRun: boolean }): Promise<RunSummary> {
+export type TriggerSource = 'cron' | 'cowork' | 'manual';
+
+export type RunDailyOptions = {
+  dryRun: boolean;
+  /** Distinguishes how this run was kicked off. Defaults to 'cron'. */
+  triggerSource?: TriggerSource;
+  /**
+   * Reuse an existing bot_runs row instead of inserting a new one.
+   * The HTTP trigger endpoint inserts the row up-front (so the caller
+   * gets the runId synchronously) and passes it here.
+   */
+  existingRunId?: number;
+};
+
+export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSummary> {
   const startedAt = new Date();
   const errors: RunSummary['errors'] = [];
+  const triggerSource: TriggerSource = options.triggerSource ?? 'cron';
 
-  // ── 1. Open bot_runs row ────────────────────────────────────
-  const [runRow] = await db
-    .insert(botRuns)
-    .values({ startedAt, notes: options.dryRun ? 'dry-run' : null })
-    .returning({ id: botRuns.id });
-  const runId = runRow!.id;
+  // ── 1. Open bot_runs row (or reuse) ────────────────────────────────
+  let runId: number;
+  if (options.existingRunId != null) {
+    runId = options.existingRunId;
+  } else {
+    const [runRow] = await db
+      .insert(botRuns)
+      .values({
+        startedAt,
+        triggerSource,
+        notes: options.dryRun ? 'dry-run' : null,
+      })
+      .returning({ id: botRuns.id });
+    runId = runRow!.id;
+  }
 
   // ── 2. Token + Sync ─────────────────────────────────────────
   const accessToken = await getValidAccessToken(db);

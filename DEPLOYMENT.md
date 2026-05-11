@@ -132,6 +132,83 @@ echo '{"frequency":"0 6 * * *"}' | curl -s -X PATCH \
   "https://coolify.martini.digital/api/v1/applications/$APP/scheduled-tasks/$TASK"
 ```
 
+### Trigger an on-demand run via HTTP (Claude Cowork)
+
+The web app exposes `POST /api/trigger-run` for ad-hoc invocations from
+outside Coolify (primarily Claude Cowork, but any caller with a valid
+Cloudflare Access service token works). The Coolify daily cron at 06:00 UTC
+stays primary; this endpoint is the manual escape hatch.
+
+**One-time setup:**
+
+1. **Cloudflare Access** — in the bexio-bot Access app, add a **Service Auth**
+   policy that allows requests with a specific Service Token, and capture the
+   app's **AUD** tag (Access → Applications → bexio-bot → Overview).
+2. **Service Token** — Access → Service Auth → Create Service Token. Save the
+   Client-Id and Client-Secret somewhere durable (1Password, etc).
+3. **Coolify env vars** on the web application (UUID in
+   `project_coolify_resource_map.md`):
+   - `CF_ACCESS_TEAM_DOMAIN=martini` (no `.cloudflareaccess.com`)
+   - `CF_ACCESS_AUD=<AUD-tag-from-step-1>`
+4. **Restart the web app** for env vars to take effect.
+
+**Cowork-side configuration:** when configuring the Cowork task that should
+trigger the bot, point it at `https://bexio-bot.martini.digital/api/trigger-run`
+and include these headers on every request:
+
+```
+CF-Access-Client-Id:     <service-token-client-id>.access
+CF-Access-Client-Secret: <service-token-client-secret>
+Content-Type:            application/json
+```
+
+**Trigger + poll example:**
+
+```bash
+TRIGGER=$(curl -s -X POST \
+  -H "CF-Access-Client-Id: $CF_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  --data '{"dryRun":false}' \
+  https://bexio-bot.martini.digital/api/trigger-run)
+
+RUN_ID=$(echo "$TRIGGER" | jq -r '.runId')
+
+# poll until finished
+while :; do
+  STATUS=$(curl -s \
+    -H "CF-Access-Client-Id: $CF_CLIENT_ID" \
+    -H "CF-Access-Client-Secret: $CF_CLIENT_SECRET" \
+    "https://bexio-bot.martini.digital/api/runs/$RUN_ID")
+  STATE=$(echo "$STATUS" | jq -r '.status')
+  echo "$STATE"
+  [[ "$STATE" == "running" ]] || break
+  sleep 5
+done
+echo "$STATUS" | jq .
+```
+
+**Response semantics:**
+
+| Endpoint | Code | Meaning |
+|---|---|---|
+| `POST /api/trigger-run` | 202 | Run started, `runId` returned. |
+| `POST /api/trigger-run` | 409 | A run is already in-flight (<30 min old). Existing `runId` returned. |
+| `POST /api/trigger-run` | 401 | CF Access JWT missing or invalid. |
+| `GET /api/runs/:id` | 200 | Status in body (`running` / `completed` / `failed` / `stale`). |
+| `GET /api/runs/:id` | 404 | No run with that ID. |
+
+Notes:
+
+- The run executes inside the web container (same process). If the container
+  is redeployed mid-run, the run gets cut off — but `reconcileInFlightSends()`
+  in the next run reconciles any `invoice_runs` rows stuck in `'sending'`
+  against bexio's `is_sent` field. No double-send risk.
+- A pre-inserted `bot_runs` row carries `trigger_source='cowork'` so manual
+  triggers are distinguishable from cron runs in the dashboard.
+- Stale-run detection: a row older than 30 minutes with `finished_at IS NULL`
+  is treated as dead (process crashed) and unblocks new triggers.
+
 ## Defense-in-depth follow-ups
 
 - **Cloudflare Origin-Lock**: configure the Hetzner Cloud Firewall (or `ufw`

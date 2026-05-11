@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "exports": {
+    "./run": "./src/lib/run.ts"
+  },
   "scripts": {
     "start": "bun run src/cli.ts",
     "dry-run": "WORKER_DRY_RUN=true bun run src/cli.ts",

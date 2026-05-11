@@ -1,0 +1,2 @@
+ALTER TABLE "bot_runs" ADD COLUMN "trigger_source" text DEFAULT 'cron' NOT NULL;--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "idx_bot_runs_in_flight" ON "bot_runs" USING btree ("started_at") WHERE finished_at IS NULL;

@@ -12,7 +12,10 @@
   "dependencies": {
     "@bexio-bot/db": "workspace:*",
     "@bexio-bot/bexio-client": "workspace:*",
-    "drizzle-orm": "^0.36.0"
+    "@bexio-bot/notify": "workspace:*",
+    "@bexio-bot/worker": "workspace:*",
+    "drizzle-orm": "^0.36.0",
+    "jose": "^5.9.6"
   },
   "devDependencies": {
     "@sveltejs/adapter-node": "^5.2.9",

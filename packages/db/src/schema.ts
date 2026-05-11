@@ -122,8 +122,9 @@ export const invoiceRuns = pgTable(
 );
 
 /**
- * Per daily run: starting time, finishing time, errors, counts.
- * One row per cron trigger.
+ * Per run: starting time, finishing time, errors, counts.
+ * One row per trigger. trigger_source distinguishes cron, on-demand HTTP
+ * (e.g. Cowork), and manual CLI invocations.
  */
 export const botRuns = pgTable(
   'bot_runs',
@@ -131,6 +132,7 @@ export const botRuns = pgTable(
     id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
+    triggerSource: text('trigger_source').notNull().default('cron'),
     errorsJsonb: jsonb('errors_jsonb'),
     createdInvoicesCount: integer('created_invoices_count').notNull().default(0),
     sentInvoicesCount: integer('sent_invoices_count').notNull().default(0),
@@ -138,6 +140,9 @@ export const botRuns = pgTable(
   },
   (t) => ({
     startedAtIdx: index('idx_bot_runs_started_at_desc').on(t.startedAt),
+    inFlightIdx: index('idx_bot_runs_in_flight')
+      .on(t.startedAt)
+      .where(sql`finished_at IS NULL`),
   }),
 );
 
