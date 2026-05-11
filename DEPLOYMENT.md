@@ -148,7 +148,9 @@ stays primary; this endpoint is the manual escape hatch.
    Client-Id and Client-Secret somewhere durable (1Password, etc).
 3. **Coolify env vars** on the web application (UUID in
    `project_coolify_resource_map.md`):
-   - `CF_ACCESS_TEAM_DOMAIN=martini` (no `.cloudflareaccess.com`)
+   - `CF_ACCESS_TEAM_DOMAIN=martinidigital` (no `.cloudflareaccess.com` —
+     verify with `jq .claim_iss` on a failing JWT if unsure; the value comes
+     from CF Zero Trust → Settings → Custom Pages → Team Domain)
    - `CF_ACCESS_AUD=<AUD-tag-from-step-1>`
 4. **Restart the web app** for env vars to take effect.
 
