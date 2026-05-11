@@ -1,8 +1,17 @@
 <script lang="ts">
   import { enhance } from '$app/forms';
+  import { page } from '$app/state';
   import type { PageData } from './$types.ts';
 
   let { data }: { data: PageData } = $props();
+
+  // Deep-linkable initial filter via ?filter=… (Discord embed links here when
+  // new orders are detected). Falls back to 'aktiv' for anything unrecognised.
+  const VALID_FILTERS = ['alle', 'aktiv', 'pausiert', 'fällig', 'archiv'] as const;
+  const initialFilter = (() => {
+    const q = page.url.searchParams.get('filter');
+    return q && (VALID_FILTERS as readonly string[]).includes(q) ? (q as (typeof VALID_FILTERS)[number]) : 'aktiv';
+  })();
 
   // ── formatting helpers ──────────────────────────────────────
   const dtCH = (opts: Intl.DateTimeFormatOptions) =>
@@ -91,7 +100,7 @@
   type SortKey = 'state' | 'customer' | 'interval' | 'next' | 'amount';
   type SortDir = 'asc' | 'desc';
 
-  let filter = $state<Filter>('aktiv');
+  let filter = $state<Filter>(initialFilter);
   let query = $state('');
   let frequency = $state<string>('alle');
   let sortKey = $state<SortKey>('next');

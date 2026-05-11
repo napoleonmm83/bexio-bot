@@ -15,12 +15,15 @@ const COLOR_MUTED = 0x6b7484;
 
 type Embed = {
   title?: string;
+  url?: string;
   description?: string;
   color?: number;
   fields?: Array<{ name: string; value: string; inline?: boolean }>;
   footer?: { text: string };
   timestamp?: string;
 };
+
+const DASHBOARD_URL = process.env.DASHBOARD_URL ?? 'https://bexio-bot.martini.digital';
 
 export type DiscordRunReport = {
   runId: number;
@@ -164,15 +167,13 @@ function buildNewOrdersEmbed(newOrders: DiscordRunReport['newOrders']): Embed {
     value: `Auftrag #${o.bexioOrderId} · ${o.interval}`,
     inline: true,
   }));
-  fields.push({
-    name: 'Aktion',
-    value: 'Im Dashboard aktivieren (Phase 1 Webapp folgt)',
-    inline: false,
-  });
+
+  const dashboardLink = `${DASHBOARD_URL}/?filter=pausiert`;
 
   return {
     title: `Neue Aufträge in bexio · ${newOrders.length}`,
-    description: 'Sync hat neue Recurring-Aufträge gefunden. Aktiviere im Dashboard, damit der Bot sie bearbeitet.',
+    url: dashboardLink,
+    description: `Sync hat neue Recurring-Aufträge gefunden. [Im Dashboard aktivieren →](${dashboardLink})`,
     color: COLOR_INFO,
     fields,
     footer: { text: 'auto-detected via /kb_order sync' },
