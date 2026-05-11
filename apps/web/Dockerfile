@@ -20,6 +20,7 @@ RUN bun install --frozen-lockfile
 # Source
 COPY tsconfig.json ./
 COPY apps/web ./apps/web
+COPY apps/worker ./apps/worker
 COPY packages ./packages
 
 RUN cd apps/web && bun run build
@@ -41,6 +42,10 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=builder /app/apps/web/build ./apps/web/build
 COPY --from=builder /app/apps/web/package.json ./apps/web/
+# Worker source needed at runtime: the trigger-run endpoint calls
+# runDaily() in-process via @bexio-bot/worker/run, which the workspace
+# resolver maps back to apps/worker/src/lib/run.ts.
+COPY --from=builder /app/apps/worker ./apps/worker
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/bun.lock ./
