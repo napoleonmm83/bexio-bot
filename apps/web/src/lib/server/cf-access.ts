@@ -17,7 +17,7 @@
 // Both are required for verification. If either is missing the verifier
 // refuses every request — fail-closed, never silently allow.
 
-import { jwtVerify, createRemoteJWKSet, type JWTPayload } from 'jose';
+import { jwtVerify, createRemoteJWKSet, decodeJwt, decodeProtectedHeader, type JWTPayload } from 'jose';
 
 const JWT_HEADER = 'cf-access-jwt-assertion';
 
@@ -78,9 +78,27 @@ export async function verifyCfAccess(request: Request): Promise<CfAccessIdentity
     });
     payload = result.payload;
   } catch (err) {
+    // Diagnostic: decode the JWT header + claims (without verifying) so the
+    // 401 response tells us why verification failed (wrong team-domain, kid
+    // not in JWKS, wrong AUD, etc.). Strip signature so this is read-only.
+    let diag: Record<string, unknown> | undefined;
+    try {
+      const header = decodeProtectedHeader(token);
+      const claims = decodeJwt(token);
+      diag = {
+        header_kid: header.kid,
+        header_alg: header.alg,
+        claim_iss: claims.iss,
+        claim_aud: claims.aud,
+        expected_iss: `https://${teamDomain}.cloudflareaccess.com`,
+        expected_aud: expectedAud,
+      };
+    } catch {
+      // ignore decode failure
+    }
     throw new CfAccessError(
       'verify-failed',
-      err instanceof Error ? err.message : String(err),
+      `${err instanceof Error ? err.message : String(err)} ${diag ? '· diag=' + JSON.stringify(diag) : ''}`,
     );
   }
 
