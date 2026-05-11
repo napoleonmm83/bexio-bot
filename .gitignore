@@ -32,6 +32,10 @@ bun-debug.log*
 .DS_Store
 Thumbs.db
 
+# AI assistant local state — machine-specific permission allowlist etc.
+# Project-shared configs (.claude/settings.json, .claude/skills/) are committed.
+.claude/settings.local.json
+
 # OS
 desktop.ini
 
