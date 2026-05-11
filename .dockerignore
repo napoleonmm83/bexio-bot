@@ -1,6 +1,10 @@
 # Build context exclusions — anything that doesn't belong in the image.
-node_modules
-.svelte-kit
+# Use **/ for nested matches: bare `node_modules` only matches top-level,
+# missing apps/*/node_modules and packages/*/node_modules. When those leak
+# into the context they overwrite the container's bun-install symlinks with
+# Windows-host absolute paths (E:/...), breaking vite/svelte-kit at build time.
+**/node_modules
+**/.svelte-kit
 **/build
 **/dist
 .git

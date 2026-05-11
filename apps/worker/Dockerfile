@@ -4,16 +4,17 @@
 FROM oven/bun:1.3.12-alpine AS deps
 WORKDIR /app
 
-# Copy workspace manifests for dependency resolution
+# Workspace manifests — copy ALL workspace package.jsons (incl. ones we
+# don't run here), otherwise bun considers the lockfile out of sync and
+# --frozen-lockfile fails.
 COPY package.json bun.lock ./
+COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
 COPY packages/db/package.json ./packages/db/
 COPY packages/bexio-client/package.json ./packages/bexio-client/
 COPY packages/notify/package.json ./packages/notify/
 
-# Install production deps. Image is pinned to bun 1.3.12 (matches local),
-# so the lockfile is compatible.
-RUN bun install --production
+RUN bun install --frozen-lockfile --production
 
 # Source files. Bun runs TypeScript directly, no build step.
 COPY tsconfig.json ./

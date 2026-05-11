@@ -4,29 +4,25 @@
 FROM oven/bun:1.3.12-alpine AS builder
 WORKDIR /app
 
-# Workspace manifests
+# Workspace manifests — copy ALL workspace package.jsons (incl. ones we
+# don't build here), otherwise bun considers the lockfile out of sync and
+# --frozen-lockfile fails.
 COPY package.json bun.lock ./
 COPY apps/web/package.json ./apps/web/
+COPY apps/worker/package.json ./apps/worker/
 COPY packages/db/package.json ./packages/db/
 COPY packages/bexio-client/package.json ./packages/bexio-client/
 COPY packages/notify/package.json ./packages/notify/
 
 # Install everything (incl. dev deps) — needed for vite build.
-# Image is pinned to bun 1.3.12 (same as local), so the lockfile is compatible.
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Source
 COPY tsconfig.json ./
 COPY apps/web ./apps/web
 COPY packages ./packages
 
-# Build SvelteKit app — invoke vite's JS entrypoint directly through bun.
-# Reason: Bun's auto-generated bin shims include both `vite` (with node shebang
-# that fails in alpine) and `vite.bunx` (a Windows .bat fragment when the image
-# was built locally on Windows). Bypass both by calling the JS file with bun.
-# Build SvelteKit. Image is pinned to bun 1.3.12 (matches local), so the
-# `vite` shim in apps/web/node_modules/.bin/ has the right Linux shebang.
-RUN cd apps/web && ./node_modules/.bin/vite build
+RUN cd apps/web && bun run build
 
 # ── Runtime image ─────────────────────────────────────
 FROM oven/bun:1.3.12-alpine AS runtime
