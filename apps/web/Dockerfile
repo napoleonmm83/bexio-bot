@@ -32,8 +32,13 @@ WORKDIR /app
 # Coolify prefers curl; including both silences a deploy-time warning).
 RUN apk add --no-cache curl
 
-# Copy production node_modules + built app
+# Copy production node_modules + built app.
+# IMPORTANT: bun's workspace install hoists deps into /app/node_modules/.bun/
+# but the user-facing symlinks (e.g. drizzle-orm) live in apps/web/node_modules/
+# — without copying that dir, SvelteKit's built server chunks can't resolve
+# imports and every route 500s with "Cannot find package".
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=builder /app/apps/web/build ./apps/web/build
 COPY --from=builder /app/apps/web/package.json ./apps/web/
 COPY --from=builder /app/packages ./packages
