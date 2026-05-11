@@ -1,5 +1,7 @@
-# Worker image — runs once per Coolify "Scheduled Task" trigger, then exits.
-# NOT a long-running server. Coolify schedules this; the container exits cleanly.
+# Worker image — long-running idle host. Coolify "Scheduled Tasks" docker-exec
+# the actual `bun run apps/worker/src/cli.ts` invocation on a cron, so the
+# container itself just needs to stay alive between runs (~5 MB RAM idle).
+# Manual one-off run: `docker exec <container> bun run apps/worker/src/cli.ts`.
 
 FROM oven/bun:1.3.12-alpine AS deps
 WORKDIR /app
@@ -24,7 +26,5 @@ COPY packages ./packages
 # Run as non-root for defense-in-depth
 USER bun
 
-# Default to a single daily run. Coolify Scheduled Task triggers via:
-#   docker run --rm <image>
-# To run --check or --dry-run, override CMD in Coolify task config.
-CMD ["bun", "run", "apps/worker/src/cli.ts"]
+# Idle host so Coolify can `docker exec` the worker on its cron schedule.
+CMD ["sleep", "infinity"]
