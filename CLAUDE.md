@@ -37,6 +37,27 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 3. Use `get_affected_flows` to understand impact.
 4. Use `query_graph` pattern="tests_for" to check coverage.
 
+## Live deployment
+
+**Status: production (since 2026-05-11).**
+
+- **Web**: https://bexio-bot.martini.digital — SvelteKit, behind Cloudflare Access (One-Time-PIN to `marcusmartini83@gmail.com`).
+- **Worker**: idle host on Coolify, runs daily via `Scheduled Task` `0 6 * * *` UTC (08:00 CH summer / 07:00 winter).
+- **DB**: shared Postgres on Coolify, daily `pg_dumpall` to S3 (verified). DB name `bexiobot`, user `bexiobot`.
+- **Build/deploy**: Coolify pulls from `napoleonmm83/bexio-bot` (private GitHub repo) via SSH deploy key. Auto-deploy on push is OFF — trigger manually via API.
+- **OAuth**: Production redirect URI is `https://bexio-bot.martini.digital/callback` (single-segment path, multi-segment `/auth/bexio/callback` rejected by bexio's validator). Local dev still uses `http://localhost:8080/callback` via `bun run oauth-setup`.
+- **Daily QA canary**: a `daily`-recurring bexio order ("IT Service Martini") triggers a full pipeline run every 08:00 CH. If anything breaks, it surfaces within 24h instead of waiting for a monthly recurring to fire.
+
+Coolify resource UUIDs (web app, worker, postgres, scheduled task, deploy key, CF Access app) live in
+project memory under `project_coolify_resource_map.md` — load it before any Coolify API call to skip
+the 5+ discovery roundtrips.
+
+API quirks worth knowing before touching Coolify (env-vars dupe on retry, no exec endpoint, scheduled
+tasks need a long-running container, server is UTC) are documented in
+memory under `reference_coolify_api_quirks.md`.
+
+Coolify API token: `.env.local` → `COOLIFY_API_TOKEN`. Base URL `https://coolify.martini.digital/api/v1/`.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.

@@ -1,5 +1,23 @@
 # Hand-off: bexio Recurring Invoice Bot (für Claude Code)
 
+> **2026-05-11 Status update — Phase 1 ist LIVE auf Coolify.**
+>
+> Das untenstehende Dokument war der ursprüngliche Plan vom 2026-05-10. Die meisten
+> "Schritte für Claude Code" sind erledigt:
+>
+> - ✅ Repo `napoleonmm83/bexio-bot` (private GitHub) — gebaut via SSH-Deploy-Key
+> - ✅ Web-App + Worker auf Coolify, hinter Cloudflare Access (OTP zu Marcus' Gmail)
+> - ✅ OAuth-Flow web-basiert auf `https://bexio-bot.martini.digital/callback`
+> - ✅ Worker als Coolify Scheduled Task, daily 06:00 UTC (= 08:00 CH Sommer)
+> - ✅ Idempotenz-Lock + Pipeline live-verifiziert (`fb99666 feat(send): real bexio email send pipeline live-verified`)
+> - ✅ Daily-Test-Canary: täglich-wiederkehrender bexio-Auftrag "IT Service Martini" testet die Pipeline jeden Morgen 08:00 CH end-to-end
+> - 🟡 Verbleibende Phase-1-Items: 30-Tage-Live-Acceptance, automatisierter Restore-Test in CI, Cloudflare-Origin-Lock auf Hetzner-Firewall
+>
+> Tagesgeschäft + API-Patterns: siehe **`DEPLOYMENT.md`** (Operational Runbooks)
+> und Project-Memory `project_coolify_resource_map.md` für UUIDs.
+
+---
+
 **Stand:** 2026-05-10. Alles davor ist abgeschlossene Buchhaltungs-Migration. Dieses Dokument beschreibt das **neue Projekt** — einen professionellen Recurring-Invoice-Bot, deployt auf Marcus' Coolify-Server.
 
 ---

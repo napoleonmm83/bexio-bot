@@ -1,148 +1,161 @@
-# Deployment auf Coolify mit Cloudflare Access
+# Deployment — bexio-bot on Coolify
 
-Drei Layer, von außen nach innen:
+**Status: live since 2026-05-11.** This document is a snapshot of the actual
+deployed setup, not a forward-looking plan. For the day-to-day Coolify resource
+IDs see `project_coolify_resource_map.md` in project memory.
 
-1. **Cloudflare DNS** — Domain zeigt auf Coolify-Server
-2. **Cloudflare Access** — Passkey-Login vor jedem Request
-3. **Coolify** — hostet Postgres + Webapp + Worker-als-Scheduled-Task
+## Architecture
 
 ```
-  User Browser
-      │
-      ▼
-  bexio-bot.deine-domain.tld   ◄── Cloudflare DNS
-      │
-      ▼
-  Cloudflare Access            ◄── Passkey-Login (WebAuthn)
-      │ (proxied, JWT eingefügt)
-      ▼
-  Coolify Reverse-Proxy
-      │
-      ▼
-  ┌──────────────┬──────────────────────┐
-  │ Webapp :3000 │  Postgres :5432      │
-  │ (SvelteKit)  │  (Coolify-Service)   │
-  └──────────────┴──────────────────────┘
-        ▲
-        │ liest dieselbe DB
-  ┌─────┴────────┐
-  │ Worker (Cron)│  ◄── Coolify "Scheduled Task" um 08:00 Europe/Zurich
-  │ runs+exits   │
-  └──────────────┘
+                       Cloudflare DNS (proxied)
+                                │
+                                ▼
+                     Cloudflare Access (One-Time PIN)
+                                │  policy: marcusmartini83@gmail.com only
+                                ▼
+                        Coolify Traefik proxy
+                                │
+                  ┌─────────────┴─────────────┐
+                  ▼                           ▼
+   bexio-bot-web (long-running)      bexio-bot-worker (idle host)
+   /apps/web/Dockerfile               /apps/worker/Dockerfile
+   port 3000, /health checked         CMD ["sleep", "infinity"]
+   Adapter-node + SvelteKit                   ▲
+                  │                           │ docker exec
+                  │                ┌──────────┴──────────┐
+                  │                │ Coolify Scheduled   │
+                  │                │ Task "daily-run"    │
+                  │                │ 0 6 * * * UTC       │
+                  │                │ bun run apps/       │
+                  │                │   worker/src/cli.ts │
+                  │                └─────────────────────┘
+                  ▼                           ▼
+        ┌──────────────────────────────────────────┐
+        │  postgresql-shared (Coolify, dump_all S3)│
+        │  DB: bexiobot, user: bexiobot            │
+        │  internal hostname: <postgres-uuid>:5432 │
+        └──────────────────────────────────────────┘
+                  ▲
+                  │
+              auth.bexio.com (OIDC, refresh-token in secrets table)
 ```
 
----
+Both apps build from the private repo `napoleonmm83/bexio-bot` via SSH deploy key
+(registered on the repo as a read-only key + uploaded to Coolify's private-key store).
 
-## Schritt 1 — Domain bei Cloudflare
+Single shared Postgres for all of Marcus' Coolify projects keeps backup operations
+to one job (`pg_dumpall` daily 04:00 → S3 with 3-day local retention).
 
-1. Domain (z.B. `deine-domain.tld`) zu Cloudflare-DNS hinzufügen (falls noch nicht).
-   Anleitung: https://developers.cloudflare.com/dns/zone-setups/full-setup/
-2. Bei deinem Domain-Registrar die Nameserver auf Cloudflare zeigen.
-3. Subdomain für den Bot anlegen:
-   - Type: `A` (oder `CNAME` falls dein Coolify hinter einer dynamischen IP läuft)
-   - Name: `bexio-bot`
-   - Target: deine Coolify-Server-IP
-   - **Proxy: ON** (orange Wolke) — wichtig für Cloudflare Access
-4. SSL/TLS-Modus: "Full (strict)" empfohlen. Coolify generiert dann ein Let's-Encrypt-Cert auf der Origin.
+## Auth surface
 
-## Schritt 2 — Cloudflare Zero Trust + Access aktivieren
+- **Cloudflare Access** sits in front of every route. Login via OTP to
+  `marcusmartini83@gmail.com`, 24h session.
+- **OAuth callback** (`/callback`) survives this transparently because the
+  user's browser carries the CF Access cookie when bexio redirects back.
+- **Deploy webhooks**: not used. Auto-deploy is OFF; deploys are triggered
+  manually via `GET /api/v1/deploy?uuid=<app-uuid>&force=true`.
 
-Cloudflare Zero Trust ist im Free-Tier bis 50 User. Ein Konto reicht ja für Marcus.
+## Daily test canary
 
-1. https://one.dash.cloudflare.com → Plan auswählen → "Free".
-2. Settings → Authentication → **Login methods** → "One-time PIN" ist als Default da. Optional: WebAuthn-fähigen IdP wie GitHub, Google, oder einen eigenen SAML/OIDC-Provider hinzufügen.
-3. **Passkey aktivieren:** Settings → WARP Client → "WebAuthn keys" als zusätzlichen Faktor erlauben. Oder: über One-Time-PIN als ersten Faktor + Passkey als zweiten.
-   - Cleaner Weg: nutz einen IdP der WebAuthn nativ kann (z.B. **PomeriumIdP** oder Google mit Security Key Enforcement).
+A `daily`-recurring bexio order ("IT Service Martini") fires every morning at
+08:00 CH. Full pipeline runs end-to-end against real bexio every day, so any
+regression (token rotation drift, bexio API change, Discord webhook breakage,
+schema drift) surfaces within 24h instead of waiting for a monthly recurring.
 
-## Schritt 3 — Access Application erstellen
+## Operational runbooks
 
-1. https://one.dash.cloudflare.com → Access → Applications → "Add an application" → "Self-hosted".
-2. **Application name:** `bexio-bot`
-3. **Session duration:** 24h (oder 7d wenn du faul bist)
-4. **Application domain:** `bexio-bot.deine-domain.tld`
-5. **Identity providers:** wähl die aus, die du in Schritt 2 konfiguriert hast.
-6. **Policies:**
-   - Policy name: `Marcus only`
-   - Action: `Allow`
-   - Include → "Emails" → `marcusmartini83@gmail.com`
-   - Require → "Authentication method" → `WebAuthn` (das macht Passkey zur Pflicht).
-7. Speichern.
+### Trigger a deploy
 
-Jetzt: jeder Aufruf von `https://bexio-bot.deine-domain.tld/...` wird von Cloudflare abgefangen. Du musst dich erst per Passkey einloggen, **dann** kommt der Request beim Bot an.
+```bash
+TOKEN=$(grep '^COOLIFY_API_TOKEN=' .env.local | cut -d= -f2-)
+APP=vx76yeg463w2ckfndrsbsj8m  # web; for worker use s8dljxy4nawz52bxcjhar9nm
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://coolify.martini.digital/api/v1/deploy?uuid=$APP&force=true"
+```
 
-## Schritt 4 — Coolify-Setup
+### Read worker run output (last 200 lines)
 
-1. **GitHub-Repo erstellen** und dieses Projekt pushen:
+```bash
+TOKEN=$(grep '^COOLIFY_API_TOKEN=' .env.local | cut -d= -f2-)
+APP=s8dljxy4nawz52bxcjhar9nm
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://coolify.martini.digital/api/v1/applications/$APP/logs?lines=200" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['logs'])"
+```
+
+### Restore the Postgres backup (manual integrity test)
+
+The shared Postgres backs up daily to S3 via `pg_dumpall`. To verify a backup
+restores cleanly (recommended every 3-6 months):
+
+1. In Coolify UI → Shared Services → `postgresql-shared` → Backups → pick a
+   recent backup → "Download" (gzipped pg_dumpall output).
+2. Spin up a throwaway Postgres locally:
    ```bash
-   gh repo create bexio-bot --private --source=. --push
+   docker run -d --rm --name pg-restore-test -e POSTGRES_PASSWORD=test \
+     -p 25433:5432 postgres:16-alpine
    ```
-   (oder via Web-UI). Repo bleibt **privat** — die `.env.local` ist gitignored, aber `BEXIO_CLIENT_SECRET` würde im Git-History suchbar sein wenn jemand mal `git add -A` macht.
+3. Restore into it:
+   ```bash
+   gunzip -c <backup-file>.gz | docker exec -i pg-restore-test \
+     psql -U postgres -d postgres
+   ```
+4. Verify: connect, `\l` should list `bexiobot` DB, `\c bexiobot` then `\dt`
+   should show `bot_runs`, `recurring_orders`, `invoice_runs`, `secrets`,
+   `__drizzle_migrations`.
+5. Tear down: `docker stop pg-restore-test`.
 
-2. **Coolify-Server**: in Coolify-UI ein neues Projekt anlegen:
+If step 4 fails: open a ticket immediately and switch backup-frequency to
+hourly until root-caused.
 
-3. **Postgres-Service** hinzufügen:
-   - Service-Type: PostgreSQL 16
-   - DB-Name: `bexiobot`
-   - User: `bexiobot`
-   - Password: stark generieren (min 32 Zeichen)
-   - Network: gleicher private Network wie die Webapp
-   - Backup: Daily nach S3-kompatiblen Storage (Hetzner Object Storage / Backblaze B2)
+### Rotate the bexio refresh token
 
-4. **Webapp-Service** hinzufügen:
-   - Build-Type: Dockerfile, Pfad `apps/web/Dockerfile`
-   - Build-Context: Repo-Root (Coolify-Default)
-   - Domain: `bexio-bot.deine-domain.tld`
-   - Port: `3000`
-   - Environment-Variablen (aus Coolify-Secrets):
-     ```
-     DATABASE_URL=postgres://bexiobot:STRONG_PW@<postgres-service>:5432/bexiobot
-     BEXIO_CLIENT_ID=d0008ce5-aa8d-4f23-b475-62010bdc71ef
-     BEXIO_CLIENT_SECRET=...
-     BEXIO_REDIRECT_URI=https://bexio-bot.deine-domain.tld/auth/bexio/callback
-     DISCORD_WEBHOOK_URL=...
-     WORKER_TZ=Europe/Zurich
-     LOG_LEVEL=info
-     NODE_ENV=production
-     ```
-   - Healthcheck: `GET /health`, Interval 60s, Threshold 3
-   - Auto-Deploy: ON für `main`-Branch
+Either:
+- Visit `/auth/bexio/reauth` in the live app and click "Mit bexio verbinden"
+  — completes the OAuth dance and writes new tokens to `secrets` table.
+- Or local: `bun run oauth-setup` → catches callback on
+  `http://localhost:8080/callback` → writes to local DB. Then export the
+  `secrets` row and import into the production Postgres (rare; the web flow
+  is the normal path).
 
-5. **Worker als Scheduled Task** hinzufügen:
-   - Coolify-Type: "Scheduled Task" (nicht "App")
-   - Image: gleiches Dockerfile-Build, aber Path `apps/worker/Dockerfile`
-   - Schedule: `0 8 * * *` (täglich 08:00 Server-Zeit — stell sicher dass Coolify-Server Zeitzone Europe/Zurich nutzt, oder nutze `0 6 * * *` für 06:00 UTC)
-   - Environment-Variablen: gleiche wie Webapp
-   - Logs: Coolify schreibt automatisch nach stdout-Logs
+### Adjust the daily-run cron
 
-6. **Migrations** beim ersten Deploy:
-   - Manuell einmal: `coolify exec <web-service> -- bun run db:migrate`
-   - Oder: Worker-Image hat im CMD-Override für ersten Run `bun run packages/db/src/migrate.ts`
-   - Spätere Migrations: Webapp-Dockerfile-CMD auf `migrate && start` umstellen, oder als pre-deploy Hook
+Coolify uses UTC. Current: `0 6 * * *` (= 08:00 CH summer / 07:00 winter).
 
-7. **Initialer OAuth-Flow auf dem Server:**
-   - Einmalig: `coolify exec <web-service> -- bun run oauth-setup`
-   - Aber: das Skript öffnet den Browser. Auf einem Headless-Server geht das nicht.
-   - Workaround: lokal den OAuth-Flow durchspielen (wie schon getan), DB-Backup machen, auf Coolify-Postgres restoren — die `secrets`-Tabelle bringt den Refresh-Token mit.
-   - Alternativ: `BEXIO_REFRESH_TOKEN` als ENV-Var setzen, ein "first-run-import"-Skript schreibt es einmal in die secrets-Tabelle.
+```bash
+TOKEN=$(grep '^COOLIFY_API_TOKEN=' .env.local | cut -d= -f2-)
+APP=s8dljxy4nawz52bxcjhar9nm
+TASK=jdp6f54qwm2n6ycosi6q0ajj
+echo '{"frequency":"0 6 * * *"}' | curl -s -X PATCH \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  --data-binary @- \
+  "https://coolify.martini.digital/api/v1/applications/$APP/scheduled-tasks/$TASK"
+```
 
-## Schritt 5 — Cloudflare Access Origin-Lock (optional, Defense-in-Depth)
+## Defense-in-depth follow-ups
 
-Cloudflare-Access setzt einen `Cf-Access-Jwt-Assertion`-Header in jeden Request. Der Bot kann den validieren — falls jemand Coolify direkt erreicht (z.B. über IP statt Domain), wird's geblockt.
+- **Cloudflare Origin-Lock**: configure the Hetzner Cloud Firewall (or `ufw`
+  on the Coolify host) to only accept inbound 80/443 from
+  [Cloudflare's published IP ranges](https://www.cloudflare.com/ips/). Without
+  this lock, anyone who learns the origin IP can bypass CF Access by hitting
+  it directly.
 
-Konfiguration im Bot kommt in einer späteren Phase. Für Phase 1: Cloudflare-Access vor Coolify reicht. Coolify-Server-Firewall sollte eingehende Connections nur von Cloudflare-IPs erlauben (Cloudflare publiziert die Liste: https://www.cloudflare.com/ips/).
+  Quickstart on the Coolify host (replace `<cf-ip-range>` for each entry from
+  https://www.cloudflare.com/ips-v4 and ips-v6):
 
-## Schritt 6 — Smoke-Test nach Deploy
+  ```bash
+  ufw default deny incoming
+  ufw allow OpenSSH
+  for IP in $(curl -s https://www.cloudflare.com/ips-v4); do
+    ufw allow from "$IP" to any port 80,443 proto tcp
+  done
+  for IP in $(curl -s https://www.cloudflare.com/ips-v6); do
+    ufw allow from "$IP" to any port 80,443 proto tcp
+  done
+  ufw enable
+  ```
 
-1. Browser → `https://bexio-bot.deine-domain.tld/health`
-2. Cloudflare-Access fängt: zeig dir Login-Screen, du klickst "WebAuthn", Passkey-Prompt.
-3. Nach Login: JSON-Response `{"status":"ok",...}`.
-4. `/` zeigt Dashboard mit deinen Aufträgen.
+- **Phase-1 acceptance criteria** (DESIGN.md): 30 days of live operation with
+  zero double-sends. Daily test canary makes this much easier to validate.
 
-## Was passiert nach Phase 1 Tag 30
-
-Acceptance-Kriterium aus Design-Doc:
-- 30 Tage Live-Betrieb mit 0 Doppel-Sendungen
-- Crash-Recovery-Suite läuft in CI
-- Mindestens ein automatisierter Restore-Test grün
-
-Diese Punkte stehen offen, sind nicht Teil von Phase 1 Schritt 10. Wir bauen sie nach den 30 Tagen Live-Betrieb auf, sobald wir wissen welche Edge-Cases tatsächlich auftreten.
+- **Crash-recovery suite in CI**: scheduled but not yet built.
