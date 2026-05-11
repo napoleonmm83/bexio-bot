@@ -28,6 +28,10 @@ RUN cd apps/web && bun run build
 FROM oven/bun:1.3.12-alpine AS runtime
 WORKDIR /app
 
+# curl for Coolify's in-container healthcheck (alpine has wget but
+# Coolify prefers curl; including both silences a deploy-time warning).
+RUN apk add --no-cache curl
+
 # Copy production node_modules + built app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/web/build ./apps/web/build
@@ -42,5 +46,7 @@ USER bun
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# adapter-node output: build/index.js is the server entry
-CMD ["bun", "run", "apps/web/build/index.js"]
+# Run drizzle migrations before starting the server so /health (which
+# queries bot_runs) doesn't fail on first deploy when the schema is empty.
+# Migrations are idempotent — safe to re-run on every container start.
+CMD ["sh", "-c", "bun run packages/db/src/migrate.ts && bun run apps/web/build/index.js"]
