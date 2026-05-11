@@ -36,6 +36,14 @@ Thumbs.db
 # Project-shared configs (.claude/settings.json, .claude/skills/) are committed.
 .claude/settings.local.json
 
+# Ephemeral deploy artifacts (SSH keys generated for one-shot Coolify provisioning)
+.deploy-tmp/
+
+# Third-party skill content installed by `npx skills add` — track only via
+# skills-lock.json so a fresh checkout can re-install the same versions.
+.agents/
+.claude/skills/ui-ux-pro-max/
+
 # OS
 desktop.ini
 
