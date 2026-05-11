@@ -1,7 +1,8 @@
 <script lang="ts">
-  // Phase 1 placeholder: full Re-Auth flow implementation lands when needed (when
-  // a refresh token actually expires). For now: link the user to run the OAuth
-  // setup script from terminal.
+  // Web-based OAuth flow: the button below is a plain link to /auth/bexio
+  // which initiates the OAuth dance, redirects to bexio's auth page, and
+  // catches the callback at /callback (writes new refresh + access tokens
+  // into the secrets table).
 </script>
 
 <div class="page">
@@ -19,15 +20,22 @@
   </div>
 
   <section class="section">
-    <h2>Anleitung</h2>
+    <h2>OAuth-Flow starten</h2>
     <p style="color: var(--text-2); line-height: 1.6;">
-      Falls der bexio-Refresh-Token abgelaufen ist (sehr selten — bexio rotiert ihn
-      bei jedem Refresh), öffne ein Terminal auf dem Server und führe aus:
+      Du wirst zu bexio weitergeleitet, meldest dich an und gibst dem Bot die
+      benötigten Berechtigungen. Nach dem Callback werden Refresh- und
+      Access-Token in der <code>secrets</code>-Tabelle gespeichert.
     </p>
-    <pre style="background: var(--surface); padding: 16px; border-radius: 4px; border: 1px solid var(--border); font-family: var(--mono); font-size: 13px; overflow-x: auto;">bun run oauth-setup</pre>
+    <p>
+      <a
+        href="/auth/bexio"
+        data-sveltekit-reload
+        style="display:inline-block;padding:10px 18px;background:var(--accent);color:white;text-decoration:none;border-radius:4px;font-weight:500;"
+      >Mit bexio verbinden</a>
+    </p>
     <p style="color: var(--text-3); font-size: 12px;">
-      Phase 1 hat keinen Web-Re-Auth-Flow. In Phase 2 ergänzt — dann kannst du
-      direkt hier auf den Button klicken und durch den OAuth-Flow im Browser laufen.
+      Alternative für Local-Dev: <code>bun run oauth-setup</code> im Terminal
+      (nutzt <code>http://localhost:8080/callback</code>).
     </p>
   </section>
 
