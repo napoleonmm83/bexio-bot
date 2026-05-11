@@ -112,6 +112,8 @@ tr:last-child td { border-bottom: none; }
 .badge.err::before { background: var(--err); }
 .badge.muted { color: var(--text-3); }
 .badge.muted::before { background: var(--text-3); }
+.badge.info { color: var(--accent); }
+.badge.info::before { background: var(--accent); }
 
 /* Disclosure */
 .admin-section { margin-top: 40px; }

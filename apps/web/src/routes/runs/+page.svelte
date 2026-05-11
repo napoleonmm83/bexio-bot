@@ -35,6 +35,14 @@
     if (run.errorsJsonb) return { label: 'mit Fehlern', cls: 'err' };
     return { label: 'erfolgreich', cls: '' };
   }
+
+  // 'cron' is the boring default — only badge the interesting cases so the
+  // table stays scannable.
+  function triggerBadge(source: string | null | undefined): { label: string; cls: string } | null {
+    if (source === 'cowork') return { label: 'Cowork', cls: 'info' };
+    if (source === 'manual') return { label: 'Manuell', cls: 'warn' };
+    return null;
+  }
 </script>
 
 <div class="page">
@@ -62,9 +70,13 @@
         <tbody>
           {#each data.runs as run}
             {@const status = runStatus(run)}
+            {@const trigger = triggerBadge(run.triggerSource)}
             <tr>
               <td class="client">
-                #{run.id}
+                <span style="display: inline-flex; align-items: center; gap: 8px;">
+                  #{run.id}
+                  {#if trigger}<span class="badge {trigger.cls}">{trigger.label}</span>{/if}
+                </span>
                 {#if run.notes}
                   <span class="meta-row">{run.notes}</span>
                 {/if}
