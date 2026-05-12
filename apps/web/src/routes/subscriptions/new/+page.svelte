@@ -12,8 +12,8 @@
 
   const filteredContacts = $derived(
     contactSearch.trim()
-      ? data.contacts.filter((c) => c.name.toLowerCase().includes(contactSearch.toLowerCase())).slice(0, 20)
-      : data.contacts.slice(0, 20),
+      ? data.contacts.filter((c) => c.name.toLowerCase().includes(contactSearch.toLowerCase()))
+      : data.contacts,
   );
 
   // Auto-suggest plan name when both customer and first product are chosen.
