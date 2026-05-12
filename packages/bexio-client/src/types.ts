@@ -192,6 +192,38 @@ export type CreateInvoiceFromOrderInput = {
   // bexio supports more fields here (api_reference, etc.) — added as needed
 };
 
+// ─── article ─────────────────────────────────────────────
+
+/**
+ * bexio article (Produkt). Fields used by the subscription layer to build
+ * invoice positions. Verified live against /article endpoint 2026-05.
+ */
+export type BexioArticle = {
+  id: number;
+  user_id?: number;
+  article_type_id?: number;
+  /** Article number shown to users (e.g. "HOST-BASIC") */
+  intern_code: string;
+  /** Display name (e.g. "Hosting Basic") */
+  intern_name: string;
+  intern_description?: string | null;
+  /** Sale price as decimal string in CHF. Source-of-truth for billing. */
+  sale_price?: string | null;
+  purchase_price?: string | null;
+  cost_price?: string | null;
+  /** Default tax id (bexio's tax registry id, NOT a rate). Used for invoice positions. */
+  sales_tax_id?: number | null;
+  purchase_tax_id?: number | null;
+  is_stock?: boolean;
+  stock_id?: number | null;
+  stock_nr?: number;
+  stock_min_nr?: number;
+  stock_reserved_nr?: number;
+  stock_available_nr?: number;
+  stock_picked_nr?: number;
+  updated_at?: string;
+};
+
 // ─── HTTP errors ──────────────────────────────────────────
 
 export type BexioErrorClass = 'auth' | 'rate_limit' | 'transient' | 'permanent';
