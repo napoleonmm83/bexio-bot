@@ -40,6 +40,14 @@ export type DiscordRunReport = {
   enabledOrders: number;
   errors: Array<{ stage: string; message: string }>;
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
+  subscriptionResults: Array<{
+    kind: 'sent' | 'skipped_duplicate' | 'failed';
+    subscriptionId: number;
+    invoiceId?: number;
+    amount?: string;
+    scheduledFor?: string;
+    reason?: string;
+  }>;
 };
 
 export type DiscordSendResult =
@@ -136,6 +144,29 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
       inline: false,
     });
   }
+  const subSent = r.subscriptionResults.filter((x) => x.kind === 'sent');
+  const subFailed = r.subscriptionResults.filter((x) => x.kind === 'failed');
+  if (subSent.length > 0 || subFailed.length > 0) {
+    fields.push({
+      name: '— Subscriptions —',
+      value: ' ',
+      inline: false,
+    });
+    for (const s of subSent.slice(0, 12)) {
+      fields.push({
+        name: `✓ Abo #${s.subscriptionId}`,
+        value: s.amount && s.invoiceId ? `CHF ${s.amount} · bexio #${s.invoiceId}` : '(no detail)',
+        inline: true,
+      });
+    }
+    for (const f of subFailed) {
+      fields.push({
+        name: `✗ Abo #${f.subscriptionId}`,
+        value: truncate(f.reason ?? 'unknown', 256),
+        inline: false,
+      });
+    }
+  }
   if (status === 'no-due' && notDue.length > 0) {
     fields.push({
       name: 'Nicht fällig',
@@ -181,9 +212,13 @@ function buildNewOrdersEmbed(newOrders: DiscordRunReport['newOrders']): Embed {
 }
 
 function pickStatus(r: DiscordRunReport): 'success' | 'failed' | 'partial' | 'no-due' {
-  if (r.errors.length > 0 && r.results.length === 0) return 'failed';
-  const failed = r.results.filter((x) => x.kind === 'failed').length;
-  const sent = r.results.filter((x) => x.kind === 'sent' || x.kind === 'skipped_duplicate').length;
+  if (r.errors.length > 0 && r.results.length === 0 && r.subscriptionResults.length === 0) return 'failed';
+  const failed =
+    r.results.filter((x) => x.kind === 'failed').length +
+    r.subscriptionResults.filter((x) => x.kind === 'failed').length;
+  const sent =
+    r.results.filter((x) => x.kind === 'sent' || x.kind === 'skipped_duplicate').length +
+    r.subscriptionResults.filter((x) => x.kind === 'sent' || x.kind === 'skipped_duplicate').length;
   if (failed > 0 && sent > 0) return 'partial';
   if (failed > 0) return 'failed';
   if (sent > 0) return 'success';

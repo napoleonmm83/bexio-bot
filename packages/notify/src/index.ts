@@ -13,15 +13,9 @@ import { sendRunReport, type DiscordRunReport, type DiscordSendResult } from './
 
 export type ChannelResult = (DiscordSendResult & { channel: 'discord' });
 
-/** Extended report shape accepted by notifyAll. Adds optional subscription results that
- *  individual adapters may render (Discord rendering added in Task 9). */
-export type NotifyAllReport = DiscordRunReport & {
-  subscriptionResults?: Array<{
-    kind: string;
-    subscriptionId: number;
-    [key: string]: unknown;
-  }>;
-};
+/** Extended report shape accepted by notifyAll. Subscription results are now
+ *  part of DiscordRunReport directly, so NotifyAllReport is just an alias. */
+export type NotifyAllReport = DiscordRunReport;
 
 /**
  * Fan-out the daily run report to all configured channels.
