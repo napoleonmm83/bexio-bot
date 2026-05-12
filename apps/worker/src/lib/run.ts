@@ -20,6 +20,7 @@ import {
   retryIssuedRows,
   type ProcessOrderResult,
 } from './state-machine.ts';
+import { processSubscriptions, type ProcessSubscriptionResult } from './subscriptions.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -38,6 +39,7 @@ export type RunSummary = {
   retriedFromIssued: number;
   enabledOrders: number;
   results: Array<{ orderId: number; customerName: string; result: ProcessOrderResult }>;
+  subscriptionResults: ProcessSubscriptionResult[];
   createdInvoicesCount: number;
   sentInvoicesCount: number;
   errors: Array<{ stage: string; message: string }>;
@@ -116,10 +118,28 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     }
   }
 
+  // ── 5b. Subscription-layer pipeline ──────────────────────────────────
+  let subscriptionResults: ProcessSubscriptionResult[] = [];
+  if (!options.dryRun) {
+    try {
+      const today = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+      subscriptionResults = await processSubscriptions(db, accessToken, today);
+    } catch (err) {
+      errors.push({
+        stage: 'processSubscriptions',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // ── 6. Close bot_runs row ───────────────────────────────────
   const finishedAt = new Date();
-  const created = results.filter((r) => r.result.kind === 'sent' || r.result.kind === 'skipped_duplicate').length;
-  const sent = results.filter((r) => r.result.kind === 'sent').length;
+  const created =
+    results.filter((r) => r.result.kind === 'sent' || r.result.kind === 'skipped_duplicate').length +
+    subscriptionResults.filter((r) => r.kind === 'sent' || r.kind === 'skipped_duplicate').length;
+  const sent =
+    results.filter((r) => r.result.kind === 'sent').length +
+    subscriptionResults.filter((r) => r.kind === 'sent').length;
 
   await db
     .update(botRuns)
@@ -153,6 +173,13 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
       ...(r.result.kind === 'not_due' ? { reason: r.result.reason } : {}),
       ...(r.result.kind === 'skipped_unsupported' ? { reason: `bexio type "${r.result.bexioType}" nicht unterstützt` } : {}),
     })),
+    subscriptionResults: subscriptionResults.map((r) => ({
+      kind: r.kind,
+      subscriptionId: r.subscriptionId,
+      ...(r.kind === 'sent' ? { invoiceId: r.invoiceId, amount: r.amount, scheduledFor: r.scheduledFor } : {}),
+      ...(r.kind === 'failed' ? { reason: r.reason, scheduledFor: r.scheduledFor } : {}),
+      ...(r.kind === 'skipped_duplicate' ? { scheduledFor: r.scheduledFor } : {}),
+    })),
   });
 
   return {
@@ -169,6 +196,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     retriedFromIssued,
     enabledOrders: enabled.length,
     results,
+    subscriptionResults,
     createdInvoicesCount: created,
     sentInvoicesCount: sent,
     errors,

@@ -13,13 +13,23 @@ import { sendRunReport, type DiscordRunReport, type DiscordSendResult } from './
 
 export type ChannelResult = (DiscordSendResult & { channel: 'discord' });
 
+/** Extended report shape accepted by notifyAll. Adds optional subscription results that
+ *  individual adapters may render (Discord rendering added in Task 9). */
+export type NotifyAllReport = DiscordRunReport & {
+  subscriptionResults?: Array<{
+    kind: string;
+    subscriptionId: number;
+    [key: string]: unknown;
+  }>;
+};
+
 /**
  * Fan-out the daily run report to all configured channels.
  * Currently only Discord. Phase 2 adds email + Notion in parallel.
  *
  * Reads channel URLs/keys from env. If a channel isn't configured, it's skipped silently.
  */
-export async function notifyAll(report: DiscordRunReport): Promise<ChannelResult[]> {
+export async function notifyAll(report: NotifyAllReport): Promise<ChannelResult[]> {
   const tasks: Array<Promise<ChannelResult>> = [];
 
   const discordUrl = process.env.DISCORD_WEBHOOK_URL;
