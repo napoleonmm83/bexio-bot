@@ -21,6 +21,7 @@ import {
   jsonb,
   primaryKey,
   index,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -156,3 +157,82 @@ export const secrets = pgTable('secrets', {
   expiresAt: timestamp('expires_at', { withTimezone: true }), // null for refresh token (long-lived)
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Subscription layer (bot-native, parallel to recurring_orders) ─────
+
+export const subscriptionIntervalEnum = pgEnum('subscription_interval', [
+  'monthly',
+  'yearly',
+]);
+
+export const subscriptionStatusEnum = pgEnum('subscription_status', [
+  'active',
+  'paused',
+  'cancelled',
+]);
+
+export const billingRunStatusEnum = pgEnum('billing_run_status', [
+  'pending',
+  'success',
+  'failed',
+  'skipped',
+]);
+
+/**
+ * Bot-native subscriptions. The bot generates invoices directly via POST /kb_invoice
+ * — bypasses bexio's recurring-engine API (which has no public trigger endpoint).
+ * Address comes live from /contact at billing time → no drift.
+ */
+export const subscriptions = pgTable(
+  'subscriptions',
+  {
+    id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+    bexioContactId: integer('bexio_contact_id').notNull(),
+    name: text('name').notNull(),
+    interval: subscriptionIntervalEnum('interval').notNull(),
+    startDate: timestamp('start_date', { withTimezone: true, mode: 'date' }).notNull(),
+    endDate: timestamp('end_date', { withTimezone: true, mode: 'date' }),
+    nextBillingDate: timestamp('next_billing_date', { withTimezone: true, mode: 'date' }).notNull(),
+    status: subscriptionStatusEnum('status').notNull().default('active'),
+    autoSend: boolean('auto_send').notNull().default(true),
+    notes: text('notes'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    dueIdx: index('idx_subscriptions_due')
+      .on(t.nextBillingDate)
+      .where(sql`status = 'active'`),
+  }),
+);
+
+export const subscriptionItems = pgTable('subscription_items', {
+  id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+  subscriptionId: integer('subscription_id')
+    .notNull()
+    .references(() => subscriptions.id, { onDelete: 'cascade' }),
+  bexioArticleId: integer('bexio_article_id').notNull(),
+  qty: text('qty').notNull().default('1'),
+  positionOrder: integer('position_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const billingRuns = pgTable(
+  'billing_runs',
+  {
+    id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+    subscriptionId: integer('subscription_id')
+      .notNull()
+      .references(() => subscriptions.id),
+    scheduledFor: timestamp('scheduled_for', { withTimezone: true, mode: 'date' }).notNull(),
+    executedAt: timestamp('executed_at', { withTimezone: true }),
+    bexioInvoiceId: integer('bexio_invoice_id'),
+    status: billingRunStatusEnum('status').notNull().default('pending'),
+    errorJsonb: jsonb('error_jsonb'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqRun: uniqueIndex('uniq_billing_runs_sub_date').on(t.subscriptionId, t.scheduledFor),
+    statusIdx: index('idx_billing_runs_status').on(t.status, t.createdAt),
+  }),
+);
