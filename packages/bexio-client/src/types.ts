@@ -224,6 +224,34 @@ export type BexioArticle = {
   updated_at?: string;
 };
 
+// ─── CreateInvoiceInput ──────────────────────────────────
+
+/**
+ * Input for POST /kb_invoice. Only the fields the subscription layer uses.
+ * bexio supports many more; add as needed.
+ */
+export type CreateInvoiceInput = {
+  contact_id: number;
+  title?: string;
+  is_valid_from: string; // YYYY-MM-DD
+  is_valid_to?: string;
+  mwst_type?: number; // 0 = incl, 1 = excl, 2 = exempt
+  mwst_is_net?: boolean;
+  api_reference?: string;
+  /** Inline positions. At least one required. */
+  positions: BexioInvoicePositionInput[];
+};
+
+export type BexioInvoicePositionInput = {
+  /** Position type. For article-based: 'KbPositionArticle'. */
+  type: 'KbPositionArticle' | 'KbPositionCustom';
+  article_id?: number; // required when type='KbPositionArticle'
+  amount: string; // qty as decimal string
+  unit_price?: string; // optional override; if omitted bexio uses the article's sale_price
+  tax_id?: number | null;
+  text?: string; // optional custom description
+};
+
 // ─── HTTP errors ──────────────────────────────────────────
 
 export type BexioErrorClass = 'auth' | 'rate_limit' | 'transient' | 'permanent';

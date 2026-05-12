@@ -5,7 +5,7 @@
 // but before DB commit, we read bexio's `is_sent` field to decide retry vs no-op.
 
 import { callBexio } from './http.ts';
-import type { BexioInvoice, CreateInvoiceFromOrderInput } from './types.ts';
+import type { BexioInvoice, CreateInvoiceFromOrderInput, CreateInvoiceInput } from './types.ts';
 
 /**
  * Create an invoice from an existing order.
@@ -101,4 +101,22 @@ export async function sendInvoice(
  */
 export async function getInvoice(accessToken: string, invoiceId: number): Promise<BexioInvoice> {
   return callBexio<BexioInvoice>(`/kb_invoice/${invoiceId}`, { accessToken });
+}
+
+/**
+ * Create an invoice from scratch (NOT from an order).
+ * Endpoint: POST /kb_invoice.
+ *
+ * Used by the subscription layer — bypasses bexio's /kb_order/{id}/invoice
+ * pull-from-amount_open semantics that breaks daily/repeated recurring.
+ */
+export async function createInvoice(
+  accessToken: string,
+  input: CreateInvoiceInput,
+): Promise<BexioInvoice> {
+  return callBexio<BexioInvoice>('/kb_invoice', {
+    accessToken,
+    method: 'POST',
+    body: input,
+  });
 }

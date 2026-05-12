@@ -6,7 +6,7 @@ export { getValidAccessToken } from './auth.ts';
 export { listRecurringOrders, getOrder, getOrderRepetition } from './orders.ts';
 export { getContact, listContacts } from './contacts.ts';
 export { listArticles, getArticle } from './articles.ts';
-export { createInvoiceFromOrder, issueInvoice, sendInvoice, getInvoice } from './invoices.ts';
+export { createInvoiceFromOrder, createInvoice, issueInvoice, sendInvoice, getInvoice } from './invoices.ts';
 export type { SendInvoiceInput } from './invoices.ts';
 export {
   BexioApiError,
@@ -23,6 +23,8 @@ export {
   type CanonicalInterval,
   type RecurringInterval,
   type CreateInvoiceFromOrderInput,
+  type CreateInvoiceInput,
+  type BexioInvoicePositionInput,
   type BexioErrorClass,
   type MappedBexioStatus,
 } from './types.ts';
