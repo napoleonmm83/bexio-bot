@@ -351,6 +351,10 @@
   <footer class="footer">
     <a href="/runs">Lauf-Historie</a>
     <span class="sep">·</span>
+    <a href="/subscriptions">Abonnements</a>
+    <span class="sep">·</span>
+    <a href="/billing-runs">Abrechnungen</a>
+    <span class="sep">·</span>
     <a href="/auth/bexio/reauth">bexio Re-Auth</a>
     <span class="sep">·</span>
     <span>Health <a href="/health" class="health-ok">200</a></span>
