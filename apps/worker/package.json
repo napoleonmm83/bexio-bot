@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./run": "./src/lib/run.ts"
+    "./run": "./src/lib/run.ts",
+    "./subscriptions": "./src/lib/subscriptions.ts"
   },
   "scripts": {
     "start": "bun run src/cli.ts",
