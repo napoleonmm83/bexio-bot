@@ -13,7 +13,7 @@ import {
   mapBexioStatus,
   mapRepetitionToInterval,
   isSupportedBexioInterval,
-  type BexioOrderRepetition,
+  type CanonicalInterval,
 } from '@bexio-bot/bexio-client';
 import { computeNextBilling } from './next-billing.ts';
 
@@ -47,7 +47,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   for (const o of orders) {
     seenIds.add(o.id);
     // Fetch repetition config — bexio doesn't include it in the order body
-    let interval: 'monthly' | 'quarterly' | 'semi_annual' | 'yearly';
+    let interval: CanonicalInterval;
     let nextBillingDate: Date;
     let unsupportedType: string | undefined;
     try {
@@ -159,6 +159,18 @@ export async function getEnabledOrders(db: Db) {
     .where(
       and(
         eq(recurringOrders.enabled, true),
+        inArray(recurringOrders.bexioStatus, ['open', 'partial']),
+      ),
+    );
+}
+
+export async function getProcessableOrderById(db: Db, bexioOrderId: number) {
+  return db
+    .select()
+    .from(recurringOrders)
+    .where(
+      and(
+        eq(recurringOrders.bexioOrderId, bexioOrderId),
         inArray(recurringOrders.bexioStatus, ['open', 'partial']),
       ),
     );

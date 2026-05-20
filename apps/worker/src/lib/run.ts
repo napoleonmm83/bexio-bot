@@ -13,7 +13,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { botRuns } from '@bexio-bot/db';
 import { getValidAccessToken } from '@bexio-bot/bexio-client';
 import { notifyAll, type ChannelResult } from '@bexio-bot/notify';
-import { syncRecurringOrders, getEnabledOrders } from './sync.ts';
+import { syncRecurringOrders, getEnabledOrders, getProcessableOrderById } from './sync.ts';
 import {
   processOrder,
   reconcileInFlightSends,
@@ -50,6 +50,8 @@ export type TriggerSource = 'cron' | 'cowork' | 'manual';
 
 export type RunDailyOptions = {
   dryRun: boolean;
+  /** Optional live-test guard: process only this bexio order id. */
+  onlyOrderId?: number;
   /** Distinguishes how this run was kicked off. Defaults to 'cron'. */
   triggerSource?: TriggerSource;
   /**
@@ -90,7 +92,9 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   const retriedFromIssued = await retryIssuedRows(db, accessToken);
 
   // ── 5. Process enabled orders ───────────────────────────────
-  const enabled = await getEnabledOrders(db);
+  const enabled = options.onlyOrderId == null
+    ? await getEnabledOrders(db)
+    : await getProcessableOrderById(db, options.onlyOrderId);
   const results: RunSummary['results'] = [];
 
   for (const o of enabled) {
@@ -98,7 +102,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
       results.push({
         orderId: o.bexioOrderId,
         customerName: o.customerName,
-        result: { kind: 'not_due', reason: '(dry-run: did not call POST /repetition)' },
+        result: { kind: 'not_due', reason: '(dry-run: did not create or send an invoice)' },
       });
       continue;
     }

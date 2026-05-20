@@ -26,8 +26,11 @@ export const POST: RequestHandler = async ({ request }) => {
   try {
     const identity = await verifyCfAccess(request);
 
-    const body: { dryRun?: boolean } = await request.json().catch(() => ({}));
+    const body: { dryRun?: boolean; onlyOrderId?: number } = await request.json().catch(() => ({}));
     const dryRun = body.dryRun === true;
+    const onlyOrderId = Number.isInteger(body.onlyOrderId) && body.onlyOrderId! > 0
+      ? body.onlyOrderId
+      : undefined;
 
     const db = getDb();
 
@@ -66,7 +69,7 @@ export const POST: RequestHandler = async ({ request }) => {
       .values({
         startedAt,
         triggerSource: 'cowork',
-        notes: `triggered by ${identity.subject}${dryRun ? ' (dry-run)' : ''}`,
+        notes: `triggered by ${identity.subject}${dryRun ? ' (dry-run)' : ''}${onlyOrderId ? ` order:${onlyOrderId}` : ''}`,
       })
       .returning({ id: botRuns.id });
     const runId = row!.id;
@@ -75,7 +78,7 @@ export const POST: RequestHandler = async ({ request }) => {
     // own. We attach a catch so unhandled rejections can't crash the process,
     // and so a thrown error still marks the row finished (with the message).
     queueMicrotask(() => {
-      runDaily(db, { dryRun, triggerSource: 'cowork', existingRunId: runId }).catch(
+      runDaily(db, { dryRun, onlyOrderId, triggerSource: 'cowork', existingRunId: runId }).catch(
         async (err) => {
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[trigger-run #${runId}] runDaily threw:`, message);

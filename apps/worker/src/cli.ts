@@ -11,6 +11,7 @@ import { runDaily } from './lib/run.ts';
 const args = process.argv.slice(2);
 const mode = args.includes('--check') ? 'check' : 'run';
 const dryRun = process.env.WORKER_DRY_RUN === 'true';
+const onlyOrderId = parseOnlyOrderId(args, process.env.WORKER_ONLY_ORDER_ID);
 
 const db = getDb();
 
@@ -35,7 +36,11 @@ try {
     console.log('  timezone:  ', process.env.WORKER_TZ ?? 'Europe/Zurich');
     console.log('');
 
-    const summary = await runDaily(db, { dryRun });
+    if (onlyOrderId != null) {
+      console.log('  only order:', onlyOrderId);
+    }
+
+    const summary = await runDaily(db, { dryRun, onlyOrderId });
 
     console.log('Run #', summary.runId, '  duration:', `${summary.finishedAt.getTime() - summary.startedAt.getTime()}ms`);
     console.log('');
@@ -115,4 +120,18 @@ function symbolFor(kind: string): string {
     case 'failed': return '✗';
     default: return '?';
   }
+}
+
+function parseOnlyOrderId(args: string[], envValue: string | undefined): number | undefined {
+  const argValue = args.find((a) => a.startsWith('--order-id='));
+  const splitValue = argValue?.slice('--order-id='.length)
+    ?? (args.includes('--order-id') ? args[args.indexOf('--order-id') + 1] : undefined)
+    ?? envValue;
+
+  if (!splitValue) return undefined;
+  const parsed = Number(splitValue);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid --order-id value: ${splitValue}`);
+  }
+  return parsed;
 }
