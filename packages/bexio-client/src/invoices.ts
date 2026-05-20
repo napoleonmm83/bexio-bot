@@ -5,7 +5,14 @@
 // but before DB commit, we read bexio's `is_sent` field to decide retry vs no-op.
 
 import { callBexio } from './http.ts';
-import type { BexioInvoice, CreateInvoiceFromOrderInput, CreateInvoiceInput } from './types.ts';
+import type {
+  BexioInvoice,
+  BexioOrder,
+  BexioOrderPosition,
+  CreateInvoiceFromOrderInput,
+  CreateInvoiceInput,
+  BexioInvoicePositionInput,
+} from './types.ts';
 
 /**
  * Create an invoice from an existing order.
@@ -36,6 +43,110 @@ export async function createInvoiceFromOrder(
     // No body — bexio's parser is strict here. callBexio() omits Content-Type
     // when body is undefined.
   });
+}
+
+export type CreateInvoiceFromOrderSnapshotInput = {
+  orderId: number;
+  isValidFrom: string;
+  apiReference?: string;
+};
+
+/**
+ * Fallback for recurring orders whose source positions are already marked as
+ * fully invoiced by bexio. There is no public "run recurring engine now" API, so
+ * we copy the order snapshot into a fresh invoice via POST /kb_invoice.
+ */
+export async function createInvoiceFromOrderSnapshot(
+  accessToken: string,
+  input: CreateInvoiceFromOrderSnapshotInput,
+): Promise<BexioInvoice> {
+  const order = await callBexio<BexioOrder>(`/kb_order/${input.orderId}`, { accessToken });
+  return createInvoice(
+    accessToken,
+    buildCreateInvoiceInputFromOrder(order, input.isValidFrom, input.apiReference),
+  );
+}
+
+// Bexio's POST /kb_invoice form requires a non-null `tax_id` on every position
+// even when the source order/position has tax_id=null (mwst_type=2 "Ohne MWST").
+// With mwst_type=2 the engine zeros out the tax math regardless of which active
+// sales_tax id we pass — verified live 2026-05-20: a CHF 1.00 line stayed at
+// total_taxes=0.0000 with tax_id=28. Account-specific id (UN81 8.1%, active).
+const NEUTRAL_TAX_ID_FALLBACK = 28;
+
+export function buildCreateInvoiceInputFromOrder(
+  order: BexioOrder,
+  isValidFrom: string,
+  apiReference?: string,
+): CreateInvoiceInput {
+  const positions = (order.positions ?? [])
+    .filter((p) => p.is_optional !== true)
+    .map(mapOrderPositionToInvoicePosition)
+    .filter((p): p is BexioInvoicePositionInput => p !== null);
+
+  if (positions.length === 0) {
+    throw new Error(`Order ${order.document_nr} has no invoiceable positions`);
+  }
+
+  if (order.user_id == null) {
+    throw new Error(`Order ${order.document_nr} has no user_id — POST /kb_invoice requires it`);
+  }
+
+  return stripUndefined({
+    contact_id: order.contact_id,
+    user_id: order.user_id,
+    title: order.title?.trim() || `Auftrag ${order.document_nr}`,
+    is_valid_from: isValidFrom,
+    mwst_type: order.mwst_type,
+    mwst_is_net: order.mwst_is_net,
+    api_reference: apiReference,
+    positions,
+  });
+}
+
+function mapOrderPositionToInvoicePosition(
+  position: BexioOrderPosition,
+): BexioInvoicePositionInput | null {
+  if (position.type !== 'KbPositionCustom' && position.type !== 'KbPositionArticle') {
+    return null;
+  }
+
+  const amount = String(position.amount ?? '1');
+  const taxId = position.tax_id ?? NEUTRAL_TAX_ID_FALLBACK;
+
+  if (position.type === 'KbPositionArticle') {
+    return stripUndefined({
+      type: 'KbPositionArticle',
+      article_id: position.article_id ?? undefined,
+      amount,
+      unit_price: position.unit_price != null ? String(position.unit_price) : undefined,
+      tax_id: taxId,
+      text: position.text ?? undefined,
+      discount_in_percent:
+        position.discount_in_percent != null ? String(position.discount_in_percent) : undefined,
+    }) as BexioInvoicePositionInput;
+  }
+
+  // KbPositionCustom: unit_name and tax_value are read-only (server-derived).
+  // POST /kb_invoice rejects them as "Unexpected extra form field" — verified
+  // live 2026-05-20.
+  return stripUndefined({
+    type: 'KbPositionCustom',
+    amount,
+    account_id: position.account_id ?? undefined,
+    unit_id: position.unit_id ?? undefined,
+    tax_id: taxId,
+    text: position.text ?? '',
+    unit_price: position.unit_price != null ? String(position.unit_price) : '0',
+    discount_in_percent:
+      position.discount_in_percent != null ? String(position.discount_in_percent) : undefined,
+  }) as BexioInvoicePositionInput;
+}
+
+function stripUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, v]) => v !== undefined),
+  ) as T;
 }
 
 /**

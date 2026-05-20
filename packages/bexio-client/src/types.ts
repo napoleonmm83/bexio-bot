@@ -110,17 +110,45 @@ export type BexioOrder = {
   title: string;
   contact_id: number;
   contact_sub_id?: number | null;
+  user_id?: number | null;
+  project_id?: number | null;
+  logopaper_id?: number | null;
+  language_id?: number | null;
+  bank_account_id?: number | null;
+  currency_id?: number | null;
+  payment_type_id?: number | null;
   total: string; // CHF as string
   total_gross?: string;
   total_net?: string;
+  mwst_type?: number;
+  mwst_is_net?: boolean;
   is_recurring: boolean;
   /** kb_item_status_id — raw bexio status. Account-specific IDs.
    *  Marcus' bexio: 5=open, 6=done, 21=canceled. Use mapBexioStatus() to translate. */
   kb_item_status_id?: number;
   repetition?: BexioRepetition | null;
+  positions?: BexioOrderPosition[];
   api_reference?: string | null;
   updated_at: string; // 'YYYY-MM-DD HH:mm:ss'
   is_valid_from?: string;
+};
+
+export type BexioOrderPosition = {
+  id: number;
+  type: string;
+  amount?: string | number;
+  unit_id?: number | null;
+  account_id?: number | null;
+  unit_name?: string | null;
+  tax_id?: number | null;
+  tax_value?: string | null;
+  text?: string | null;
+  unit_price?: string | number | null;
+  discount_in_percent?: string | number | null;
+  internal_pos?: number | null;
+  is_optional?: boolean | null;
+  parent_id?: number | null;
+  article_id?: number | null;
 };
 
 export type MappedBexioStatus = 'open' | 'partial' | 'done' | 'canceled' | 'unknown';
@@ -246,10 +274,15 @@ export type BexioInvoicePositionInput = {
   /** Position type. For article-based: 'KbPositionArticle'. */
   type: 'KbPositionArticle' | 'KbPositionCustom';
   article_id?: number; // required when type='KbPositionArticle'
+  account_id?: number | null;
+  unit_id?: number | null;
+  unit_name?: string | null;
   amount: string; // qty as decimal string
   unit_price?: string; // optional override; if omitted bexio uses the article's sale_price
   tax_id?: number | null;
+  tax_value?: string | null;
   text?: string; // optional custom description
+  discount_in_percent?: string | null;
 };
 
 // ─── HTTP errors ──────────────────────────────────────────
