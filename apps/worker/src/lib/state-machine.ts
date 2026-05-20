@@ -23,6 +23,7 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { invoiceRuns, recurringOrders } from '@bexio-bot/db';
 import {
   createInvoiceFromOrder,
+  createInvoiceFromOrderSnapshot,
   issueInvoice,
   sendInvoice,
   getInvoice,
@@ -69,6 +70,25 @@ function renderTemplate(template: string, vars: Record<string, string>): string 
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
 }
 
+function todayIsoInZurich(): string {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Zurich',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const parts = fmt.formatToParts(new Date());
+  const year = parts.find((p) => p.type === 'year')?.value;
+  const month = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  if (!year || !month || !day) throw new Error('Could not format current Zurich date');
+  return `${year}-${month}-${day}`;
+}
+
+function isFullyInvoicedOrderError(err: BexioApiError): boolean {
+  return err.status === 422 && err.body.toLowerCase().includes('order is fully invoiced');
+}
+
 /**
  * Drive one order through the full pipeline in this run.
  * Single API "round trip" per state — no nested locking, transactions are
@@ -79,6 +99,21 @@ export async function processOrder(
   accessToken: string,
   order: OrderInput,
 ): Promise<ProcessOrderResult> {
+  const invoiceDate = todayIsoInZurich();
+  const billingPeriod = formatBillingPeriod(invoiceDate);
+
+  const existingForPeriod = await db
+    .select()
+    .from(invoiceRuns)
+    .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+  if (existingForPeriod[0]?.invoiceId) {
+    return {
+      kind: 'skipped_duplicate',
+      existingInvoiceId: existingForPeriod[0].invoiceId,
+      billingPeriod,
+    };
+  }
+
   // Step 0: safety check — refuse to bill unsupported intervals (weekly/daily/custom).
   // Bot would otherwise create a monthly invoice for an order Marcus configured weekly.
   try {
@@ -94,11 +129,28 @@ export async function processOrder(
   }
 
   // Step 1: ask bexio to create the next invoice
-  let invoice: BexioInvoice;
+  let invoice: BexioInvoice | undefined;
   try {
     invoice = await createInvoiceFromOrder(accessToken, { order_id: order.bexioOrderId });
   } catch (err) {
     if (err instanceof BexioApiError) {
+      if (isFullyInvoicedOrderError(err)) {
+        try {
+          invoice = await createInvoiceFromOrderSnapshot(accessToken, {
+            orderId: order.bexioOrderId,
+            isValidFrom: invoiceDate,
+            apiReference: `bexio-bot:order:${order.bexioOrderId}:period:${billingPeriod}`,
+          });
+        } catch (fallbackErr) {
+          return {
+            kind: 'failed',
+            reason: fallbackErr instanceof BexioApiError
+              ? `snapshot fallback failed: ${fallbackErr.errorClass}: ${fallbackErr.body.slice(0, 200)}`
+              : `snapshot fallback failed: ${String(fallbackErr)}`,
+            bexioStatus: fallbackErr instanceof BexioApiError ? fallbackErr.status : undefined,
+          };
+        }
+      } else {
       // 403 = scope mismatch or permission denied. Distinct from "not due".
       // Body usually mentions "not allowed" or "permission".
       if (err.status === 403) {
@@ -124,15 +176,17 @@ export async function processOrder(
       if (err.errorClass === 'permanent') {
         return { kind: 'not_due', reason: err.body.slice(0, 200) };
       }
+      }
     }
-    return {
+    if (!invoice) return {
       kind: 'failed',
       reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 200)}` : String(err),
       bexioStatus: err instanceof BexioApiError ? err.status : undefined,
     };
   }
-
-  const billingPeriod = formatBillingPeriod(invoice.is_valid_from);
+  if (!invoice) {
+    return { kind: 'failed', reason: 'invoice creation returned no invoice' };
+  }
 
   // Step 2: insert invoice_runs row. ON CONFLICT means bexio gave us an invoice for
   // a period we already processed — that's a duplicate. Skip and log.
