@@ -101,12 +101,17 @@ export async function processOrder(
 ): Promise<ProcessOrderResult> {
   const invoiceDate = todayIsoInZurich();
   const billingPeriod = formatBillingPeriod(invoiceDate);
+  // Stable prefix on every log line — pipe Coolify logs through `grep "[order=N"`
+  // to follow one order's full pipeline. Keep prefix short; the orchestrator's
+  // summary already shows the customer name.
+  const ctx = `[order=${order.bexioOrderId} period=${billingPeriod}]`;
 
   const existingForPeriod = await db
     .select()
     .from(invoiceRuns)
     .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
   if (existingForPeriod[0]?.invoiceId) {
+    console.log(`${ctx} duplicate guard hit — existing invoice ${existingForPeriod[0].invoiceId}`);
     return {
       kind: 'skipped_duplicate',
       existingInvoiceId: existingForPeriod[0].invoiceId,
@@ -119,6 +124,7 @@ export async function processOrder(
   try {
     const rep = await getOrderRepetition(accessToken, order.bexioOrderId);
     if (!isSupportedBexioInterval(rep)) {
+      console.log(`${ctx} unsupported bexio repetition type "${rep?.repetition?.type ?? 'unknown'}" — skipping`);
       return {
         kind: 'skipped_unsupported',
         bexioType: rep?.repetition?.type ?? 'unknown',
@@ -132,20 +138,31 @@ export async function processOrder(
   let invoice: BexioInvoice | undefined;
   try {
     invoice = await createInvoiceFromOrder(accessToken, { order_id: order.bexioOrderId });
+    console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → invoice ${invoice.id}`);
   } catch (err) {
     if (err instanceof BexioApiError) {
       if (isFullyInvoicedOrderError(err)) {
+        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → 422 fully-invoiced; trying snapshot fallback`);
         try {
           invoice = await createInvoiceFromOrderSnapshot(accessToken, {
             orderId: order.bexioOrderId,
             isValidFrom: invoiceDate,
             apiReference: `bexio-bot:order:${order.bexioOrderId}:period:${billingPeriod}`,
           });
+          console.log(`${ctx} snapshot fallback → invoice ${invoice.id}`);
         } catch (fallbackErr) {
+          if (fallbackErr instanceof BexioApiError) {
+            // Full body to console for Coolify logs / grep-ability. result.reason
+            // gets a longer slice (800 chars) so Discord notify also surfaces the
+            // bexio validation message instead of cutting off mid-error.
+            console.error(`${ctx} snapshot fallback FAILED status=${fallbackErr.status} class=${fallbackErr.errorClass} body=${fallbackErr.body}`);
+          } else {
+            console.error(`${ctx} snapshot fallback FAILED (non-BexioApiError):`, fallbackErr);
+          }
           return {
             kind: 'failed',
             reason: fallbackErr instanceof BexioApiError
-              ? `snapshot fallback failed: ${fallbackErr.errorClass}: ${fallbackErr.body.slice(0, 200)}`
+              ? `snapshot fallback failed: ${fallbackErr.errorClass}: ${fallbackErr.body.slice(0, 800)}`
               : `snapshot fallback failed: ${String(fallbackErr)}`,
             bexioStatus: fallbackErr instanceof BexioApiError ? fallbackErr.status : undefined,
           };
@@ -174,13 +191,17 @@ export async function processOrder(
       // "no repetition" or "nothing to invoice" — we don't pattern-match to keep
       // the heuristic loose; the differentiation 401/403 above catches the auth case.
       if (err.errorClass === 'permanent') {
+        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → ${err.status} permanent (treated as not_due): ${err.body.slice(0, 300)}`);
         return { kind: 'not_due', reason: err.body.slice(0, 200) };
       }
+      console.error(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice FAILED status=${err.status} class=${err.errorClass} body=${err.body}`);
       }
+    } else {
+      console.error(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice FAILED (non-BexioApiError):`, err);
     }
     if (!invoice) return {
       kind: 'failed',
-      reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 200)}` : String(err),
+      reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 800)}` : String(err),
       bexioStatus: err instanceof BexioApiError ? err.status : undefined,
     };
   }
@@ -221,6 +242,7 @@ export async function processOrder(
   try {
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issuing');
     await issueInvoice(accessToken, invoice.id);
+    console.log(`${ctx} issued invoice ${invoice.id} (${invoice.document_nr})`);
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issued', { issuedAt: new Date() });
 
     if (!order.customerEmail) {
@@ -244,6 +266,7 @@ export async function processOrder(
       message: renderTemplate(MAIL_MESSAGE_TEMPLATE, { document_nr: docNr }),
       attachPdf: true,
     });
+    console.log(`${ctx} sent invoice ${invoice.id} to ${order.customerEmail}`);
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'sent', {
       sentAt: new Date(),
       lockAcquiredAt: null,
@@ -251,10 +274,15 @@ export async function processOrder(
 
     return { kind: 'sent', invoiceId: invoice.id, amount: invoice.total, billingPeriod };
   } catch (err) {
+    if (err instanceof BexioApiError) {
+      console.error(`${ctx} issue/send FAILED invoice=${invoice.id} status=${err.status} class=${err.errorClass} body=${err.body}`);
+    } else {
+      console.error(`${ctx} issue/send FAILED invoice=${invoice.id}:`, err);
+    }
     await markFailed(db, order.bexioOrderId, billingPeriod, err);
     return {
       kind: 'failed',
-      reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 200)}` : String(err),
+      reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 800)}` : String(err),
       bexioStatus: err instanceof BexioApiError ? err.status : undefined,
       invoiceId: invoice.id,
     };
