@@ -1,6 +1,9 @@
 # Added by code-review-graph
 .code-review-graph/
 
+# Codex CLI workspace + archived probe scripts
+.codex/
+
 # Dependencies
 node_modules/
 .pnp
