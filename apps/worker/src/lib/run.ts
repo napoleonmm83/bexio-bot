@@ -20,7 +20,11 @@ import {
   retryIssuedRows,
   type ProcessOrderResult,
 } from './state-machine.ts';
-import { processSubscriptions, type ProcessSubscriptionResult } from './subscriptions.ts';
+import {
+  processSubscriptions,
+  reconcileInFlightBillingRuns,
+  type ProcessSubscriptionResult,
+} from './subscriptions.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -85,7 +89,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
 
   // ── 2. Token + Sync ─────────────────────────────────────────
   const accessToken = await getValidAccessToken(db);
-  const sync = await syncRecurringOrders(db, accessToken);
+  const sync = await syncRecurringOrders(db, accessToken, { dryRun: options.dryRun });
 
   // ── 3 + 4. Crash recovery ───────────────────────────────────
   const reconcile = await reconcileInFlightSends(db, accessToken);
@@ -125,6 +129,20 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   // ── 5b. Subscription-layer pipeline ──────────────────────────────────
   let subscriptionResults: ProcessSubscriptionResult[] = [];
   if (!options.dryRun) {
+    // Crash-recovery for billing_runs stuck in 'pending' from a previous run
+    // that died mid-flight. (F-12)
+    try {
+      const recon = await reconcileInFlightBillingRuns(db, accessToken);
+      if (recon.reconciled > 0 || recon.deleted > 0) {
+        console.log(`reconcileInFlightBillingRuns: reconciled=${recon.reconciled} deleted=${recon.deleted}`);
+      }
+    } catch (err) {
+      errors.push({
+        stage: 'reconcileInFlightBillingRuns',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     try {
       // Use the current instant (not UTC-midnight-today). Subscriptions store
       // next_billing_date as a date (midnight in whatever TZ they were inserted),
@@ -143,12 +161,13 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
 
   // ── 6. Close bot_runs row ───────────────────────────────────
   const finishedAt = new Date();
+  // F-8: separate counters — `created` now means truly NEW invoices this run.
+  // skipped_duplicate is a no-op (a row already existed for the period) and
+  // should not be conflated with creation.
   const created =
-    results.filter((r) => r.result.kind === 'sent' || r.result.kind === 'skipped_duplicate').length +
-    subscriptionResults.filter((r) => r.kind === 'sent' || r.kind === 'skipped_duplicate').length;
-  const sent =
     results.filter((r) => r.result.kind === 'sent').length +
     subscriptionResults.filter((r) => r.kind === 'sent').length;
+  const sent = created;
 
   await db
     .update(botRuns)

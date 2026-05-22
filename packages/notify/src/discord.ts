@@ -231,9 +231,16 @@ function pickTitle(
   resultCount: number,
   enabledCount: number,
 ): string {
-  if (status === 'success') return `Lauf erfolgreich · ${sentCount}/${resultCount} Rechnungen`;
+  // F-8: title shows ACTUAL new invoices (sentCount). Duplicates are listed
+  // as ↺-fields below, not counted as creation.
+  if (status === 'success' && sentCount > 0) return `Lauf erfolgreich · ${sentCount} neue Rechnungen`;
+  if (status === 'success' && sentCount === 0) {
+    return resultCount > 0
+      ? 'Lauf erfolgreich · keine neuen Rechnungen (Duplikate übersprungen)'
+      : 'Lauf erfolgreich · keine Aufträge fällig';
+  }
   if (status === 'failed') return 'Lauf abgebrochen';
-  if (status === 'partial') return `Lauf teilweise · ${sentCount}/${resultCount} Rechnungen`;
+  if (status === 'partial') return `Lauf teilweise · ${sentCount} neue Rechnungen, Fehler beachten`;
   if (enabledCount === 0) return 'Lauf erfolgreich · keine Aufträge im Bot-Scope';
   return 'Lauf erfolgreich · keine Aufträge fällig';
 }

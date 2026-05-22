@@ -32,7 +32,11 @@ export type SyncResult = {
   unsupportedOrders: Array<{ bexioOrderId: number; customerName: string; bexioType: string }>;
 };
 
-export async function syncRecurringOrders(db: Db, accessToken: string): Promise<SyncResult> {
+export async function syncRecurringOrders(
+  db: Db,
+  accessToken: string,
+  options: { dryRun?: boolean } = {},
+): Promise<SyncResult> {
   const orders = await listRecurringOrders(accessToken);
 
   let newlyAdded = 0;
@@ -86,6 +90,18 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
 
     const bexioStatus = mapBexioStatus(o.kb_item_status_id);
 
+    if (options.dryRun) {
+      // N-11: dry-run must not mutate state. Skip the upsert; treat unknown
+      // orders as 'newly added' for reporting purposes (caller uses this
+      // count for UI only in dry-run mode).
+      newOrders.push({ bexioOrderId: o.id, customerName, interval });
+      newlyAdded += 1;
+      if (unsupportedType) {
+        unsupportedOrders.push({ bexioOrderId: o.id, customerName, bexioType: unsupportedType });
+      }
+      continue;
+    }
+
     // INSERT ... ON CONFLICT — if row exists, refresh cache fields incl. status.
     // Never touch `enabled` — that's the user's opt-in.
     const result = await db
@@ -138,7 +154,9 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   // invoice_runs has no FK back to recurring_orders so orphan rows there are fine.
   let removedOrders = 0;
   const seenArray = [...seenIds];
-  if (seenArray.length === 0) {
+  if (options.dryRun) {
+    console.log('sync: dry-run mode — skipping orphan cleanup (N-11)');
+  } else if (seenArray.length === 0) {
     // bexio returned zero recurring orders. Almost certainly a transient API
     // issue, not a legitimate "Marcus deleted everything". Skip the orphan
     // cleanup this run — wiping would lose all opt-in enabled flags. (F-7)

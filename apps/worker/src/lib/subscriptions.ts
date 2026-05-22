@@ -13,7 +13,7 @@
 // Catch-up: if next_billing_date is multiple intervals in the past (Bot was offline),
 // loops at most 12 times per subscription to avoid runaway re-billing.
 
-import { and, eq, isNull, lte, or, gte } from 'drizzle-orm';
+import { and, eq, isNull, lt, lte, or, gte } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import {
   subscriptions,
@@ -26,10 +26,13 @@ import {
   createInvoice,
   issueInvoice,
   sendInvoice,
+  getInvoice,
   BexioApiError,
   type BexioInvoicePositionInput,
 } from '@bexio-bot/bexio-client';
 import { addBillingInterval, type SubscriptionInterval } from './billing-interval.ts';
+
+const STALE_BILLING_RUN_MS = 30 * 60 * 1000;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -299,6 +302,71 @@ async function processOneSubscription(
       scheduledFor: scheduledForIso,
     };
   }
+}
+
+/**
+ * Recover from crashes during processOneSubscription. Find billing_runs rows
+ * stuck in status='pending' older than STALE_BILLING_RUN_MS. (F-12)
+ *
+ *   - bexio_invoice_id is set AND bexio reports sent → mark success + advance next_billing_date atomically
+ *   - bexio_invoice_id is set AND bexio doesn't report sent → DELETE row, retry next run (let new run resend)
+ *   - no bexio_invoice_id → DELETE row, retry next run (bexio call never completed)
+ *
+ * Run this BEFORE processSubscriptions in each cron run.
+ */
+export async function reconcileInFlightBillingRuns(
+  db: Db,
+  accessToken: string,
+): Promise<{ reconciled: number; deleted: number }> {
+  const cutoff = new Date(Date.now() - STALE_BILLING_RUN_MS);
+  const stuck = await db
+    .select()
+    .from(billingRuns)
+    .where(and(eq(billingRuns.status, 'pending'), lt(billingRuns.createdAt, cutoff)));
+
+  let reconciled = 0;
+  let deleted = 0;
+
+  for (const row of stuck) {
+    if (row.bexioInvoiceId) {
+      try {
+        const live = await getInvoice(accessToken, row.bexioInvoiceId);
+        if (live.is_sent || live.mail_sent_at) {
+          await db.transaction(async (tx) => {
+            await tx
+              .update(billingRuns)
+              .set({ status: 'success', executedAt: new Date() })
+              .where(eq(billingRuns.id, row.id));
+
+            const subs = await tx
+              .select()
+              .from(subscriptions)
+              .where(eq(subscriptions.id, row.subscriptionId));
+            const sub = subs[0];
+            if (sub && sub.nextBillingDate.getTime() === row.scheduledFor.getTime()) {
+              const newNext = addBillingInterval(sub.nextBillingDate, sub.interval as SubscriptionInterval);
+              await tx
+                .update(subscriptions)
+                .set({ nextBillingDate: newNext, updatedAt: new Date() })
+                .where(eq(subscriptions.id, sub.id));
+            }
+          });
+          reconciled += 1;
+        } else {
+          await db.delete(billingRuns).where(eq(billingRuns.id, row.id));
+          deleted += 1;
+        }
+      } catch {
+        await db.delete(billingRuns).where(eq(billingRuns.id, row.id));
+        deleted += 1;
+      }
+    } else {
+      await db.delete(billingRuns).where(eq(billingRuns.id, row.id));
+      deleted += 1;
+    }
+  }
+
+  return { reconciled, deleted };
 }
 
 /**
