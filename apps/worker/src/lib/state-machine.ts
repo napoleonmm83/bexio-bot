@@ -90,6 +90,18 @@ function isFullyInvoicedOrderError(err: BexioApiError): boolean {
 }
 
 /**
+ * Snapshot fallback is ONLY safe for daily / weekly recurring orders. For
+ * monthly+ orders, bexio's 422 "order is fully invoiced" means "not yet due
+ * this period" — snapshotting would create a non-due invoice (money loss /
+ * overbilling). For daily / weekly the snapshot path is correct because the
+ * order's positions are exhausted by the first invoice and bexio rejects every
+ * subsequent same-period call.
+ */
+export function shouldSnapshotFallback(repetitionType: string | undefined): boolean {
+  return repetitionType === 'daily' || repetitionType === 'weekly';
+}
+
+/**
  * Drive one order through the full pipeline in this run.
  * Single API "round trip" per state — no nested locking, transactions are
  * narrow around the DB writes.
@@ -149,7 +161,14 @@ export async function processOrder(
   } catch (err) {
     if (err instanceof BexioApiError) {
       if (isFullyInvoicedOrderError(err)) {
-        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → 422 fully-invoiced; trying snapshot fallback`);
+        if (!shouldSnapshotFallback(repetitionType)) {
+          console.log(`${ctx} 422 fully-invoiced on ${repetitionType ?? 'unknown'} order — treating as not_due (snapshot only allowed for daily/weekly)`);
+          return {
+            kind: 'not_due',
+            reason: `422 fully-invoiced (${repetitionType ?? 'unknown'} not-due-this-period; snapshot only allowed for daily/weekly)`,
+          };
+        }
+        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → 422 fully-invoiced on daily/weekly; trying snapshot fallback`);
         try {
           invoice = await createInvoiceFromOrderSnapshot(accessToken, {
             orderId: order.bexioOrderId,
