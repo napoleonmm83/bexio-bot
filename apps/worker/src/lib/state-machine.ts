@@ -100,7 +100,29 @@ export async function processOrder(
   order: OrderInput,
 ): Promise<ProcessOrderResult> {
   const invoiceDate = todayIsoInZurich();
-  const billingPeriod = formatBillingPeriod(invoiceDate);
+
+  // Step 0: fetch repetition first — its type drives both the supported-interval
+  // safety check AND the billing-period granularity. For daily orders the period
+  // key must include the day ('2026-05-22'), otherwise the duplicate guard below
+  // would block every subsequent day of the same month after the first invoice.
+  let repetitionType: string | undefined;
+  try {
+    const rep = await getOrderRepetition(accessToken, order.bexioOrderId);
+    if (!isSupportedBexioInterval(rep)) {
+      console.log(`[order=${order.bexioOrderId}] unsupported bexio repetition type "${rep?.repetition?.type ?? 'unknown'}" — skipping`);
+      return {
+        kind: 'skipped_unsupported',
+        bexioType: rep?.repetition?.type ?? 'unknown',
+      };
+    }
+    repetitionType = rep?.repetition?.type;
+  } catch {
+    // If repetition fetch fails, fall through with monthly granularity (status quo
+    // pre-2026-05-22). Worst case: a daily order is wedged for the rest of the month
+    // if bexio is flaky exactly during this call — extremely rare.
+  }
+
+  const billingPeriod = formatBillingPeriod(invoiceDate, repetitionType);
   // Stable prefix on every log line — pipe Coolify logs through `grep "[order=N"`
   // to follow one order's full pipeline. Keep prefix short; the orchestrator's
   // summary already shows the customer name.
@@ -117,21 +139,6 @@ export async function processOrder(
       existingInvoiceId: existingForPeriod[0].invoiceId,
       billingPeriod,
     };
-  }
-
-  // Step 0: safety check — refuse to bill unsupported intervals (weekly/daily/custom).
-  // Bot would otherwise create a monthly invoice for an order Marcus configured weekly.
-  try {
-    const rep = await getOrderRepetition(accessToken, order.bexioOrderId);
-    if (!isSupportedBexioInterval(rep)) {
-      console.log(`${ctx} unsupported bexio repetition type "${rep?.repetition?.type ?? 'unknown'}" — skipping`);
-      return {
-        kind: 'skipped_unsupported',
-        bexioType: rep?.repetition?.type ?? 'unknown',
-      };
-    }
-  } catch {
-    // If we can't fetch repetition, fall through to bexio — it'll tell us via 4xx.
   }
 
   // Step 1: ask bexio to create the next invoice

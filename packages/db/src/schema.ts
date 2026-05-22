@@ -96,8 +96,11 @@ export const recurringOrders = pgTable(
 
 /**
  * Idempotency + state machine per (order_id, billing_period).
- * billing_period format: 'YYYY-MM' (monthly), 'YYYY-Q{1-4}' (quarterly),
- * 'YYYY-H{1-2}' (semi-annual), 'YYYY' (yearly), in Europe/Zurich.
+ * billing_period format (Europe/Zurich, picked by repetition type in
+ * formatBillingPeriod):
+ *   - 'YYYY-MM-DD' for daily orders
+ *   - 'YYYY-Www'   for weekly orders (ISO-8601 week)
+ *   - 'YYYY-MM'    for monthly / quarterly / semi-annual / yearly (and unknown)
  */
 export const invoiceRuns = pgTable(
   'invoice_runs',
