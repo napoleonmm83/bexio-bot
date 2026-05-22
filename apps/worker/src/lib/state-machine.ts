@@ -135,28 +135,39 @@ export async function processOrder(
 ): Promise<ProcessOrderResult> {
   const invoiceDate = todayIsoInZurich();
 
-  // Step 0: fetch repetition first — its type drives both the supported-interval
-  // safety check AND the billing-period granularity. For daily orders the period
-  // key must include the day ('2026-05-22'), otherwise the duplicate guard below
-  // would block every subsequent day of the same month after the first invoice.
+  // Step 0: fetch repetition — REQUIRED for billing-period granularity. We
+  // retry once before giving up. Silent fallback to monthly is unsafe because
+  // a later successful fetch would use a different period key for the same
+  // logical day, allowing duplicate invoices. (N-3)
   let repetitionType: string | undefined;
-  try {
-    const rep = await getOrderRepetition(accessToken, order.bexioOrderId);
-    if (!isSupportedBexioInterval(rep)) {
-      console.log(`[order=${order.bexioOrderId}] unsupported bexio repetition type "${rep?.repetition?.type ?? 'unknown'}" — skipping`);
-      return {
-        kind: 'skipped_unsupported',
-        bexioType: rep?.repetition?.type ?? 'unknown',
-      };
+  let repetitionFetchSucceeded = false;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const rep = await getOrderRepetition(accessToken, order.bexioOrderId);
+      if (!isSupportedBexioInterval(rep)) {
+        console.log(`[order=${order.bexioOrderId}] unsupported bexio repetition type "${rep?.repetition?.type ?? 'unknown'}" — skipping`);
+        return {
+          kind: 'skipped_unsupported',
+          bexioType: rep?.repetition?.type ?? 'unknown',
+        };
+      }
+      repetitionType = rep?.repetition?.type;
+      repetitionFetchSucceeded = true;
+      break;
+    } catch (err) {
+      if (attempt === 1) {
+        console.error(`[order=${order.bexioOrderId}] getOrderRepetition failed after 2 attempts:`, err);
+      }
     }
-    repetitionType = rep?.repetition?.type;
-  } catch {
-    // If repetition fetch fails, fall through with monthly granularity (status quo
-    // pre-2026-05-22). Worst case: a daily order is wedged for the rest of the month
-    // if bexio is flaky exactly during this call — extremely rare.
+  }
+  if (!repetitionFetchSucceeded) {
+    return {
+      kind: 'failed',
+      reason: 'could not fetch repetition config from bexio after 2 attempts — refusing to process to avoid split-brain period keys',
+    };
   }
 
-  const billingPeriod = formatBillingPeriod(invoiceDate, repetitionType);
+  let billingPeriod = formatBillingPeriod(invoiceDate, repetitionType);
   // Stable prefix on every log line — pipe Coolify logs through `grep "[order=N"`
   // to follow one order's full pipeline. Keep prefix short; the orchestrator's
   // summary already shows the customer name.
@@ -282,11 +293,24 @@ export async function processOrder(
     return { kind: 'failed', reason: 'invoice creation returned no invoice' };
   }
 
-  // Bexio call succeeded — fill in invoice_id on our claim row.
-  await db
-    .update(invoiceRuns)
-    .set({ invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
-    .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+  // Bexio call succeeded — reconcile period key from invoice.is_valid_from
+  // (N-2). bexio may set a different date than today (e.g., schedule shift),
+  // and the period it logically belongs to is the one derived from that date.
+  const invoiceValidFrom = invoice.is_valid_from ?? invoiceDate;
+  const truePeriod = formatBillingPeriod(invoiceValidFrom, repetitionType);
+  if (truePeriod !== billingPeriod) {
+    console.log(`${ctx} migrating period key ${billingPeriod} → ${truePeriod} (from invoice is_valid_from=${invoiceValidFrom})`);
+    await db
+      .update(invoiceRuns)
+      .set({ billingPeriod: truePeriod, invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
+      .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+    billingPeriod = truePeriod;
+  } else {
+    await db
+      .update(invoiceRuns)
+      .set({ invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
+      .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+  }
 
   // Step 3: drive through issuing → issued → sending → sent
   // wasIssued tracks whether issueInvoice() succeeded so we can roll back to
