@@ -432,7 +432,6 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
 
   for (const row of stuck) {
     if (!row.invoiceId) {
-      // No invoice_id but status='sending' is impossible by construction — log + skip.
       reconciledFailed += 1;
       await markFailed(db, row.orderId, row.billingPeriod, new Error('crash_during_send_no_invoice_id'));
       continue;
@@ -441,8 +440,24 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
     try {
       const live = await getInvoice(accessToken, row.invoiceId);
       if (live.is_sent || live.mail_sent_at) {
+        // bexio confirms sent — trust it.
         await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {
           sentAt: live.mail_sent_at ? new Date(live.mail_sent_at) : new Date(),
+          lockAcquiredAt: null,
+        });
+        reconciledSent += 1;
+      } else if ((row.attempts ?? 0) >= 1) {
+        // bexio doesn't confirm sent, but we ALREADY tried at least once.
+        // bexio's GET /kb_invoice/{id} is famously flaky here — is_sent may
+        // stay undefined even after a successful /send (see invoices.ts:182).
+        // Assume the send happened to avoid spamming the customer with
+        // duplicate mails. If it really didn't go out, Marcus will notice
+        // from a missing receipt and can re-trigger manually. (N-5)
+        console.warn(
+          `[reconcile order=${row.orderId} period=${row.billingPeriod}] bexio is_sent unconfirmed after ${row.attempts} attempts — assuming sent (bexio read-back quirk)`,
+        );
+        await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {
+          sentAt: new Date(),
           lockAcquiredAt: null,
         });
         reconciledSent += 1;
@@ -450,7 +465,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
         await markFailed(db, row.orderId, row.billingPeriod, new Error('send_retries_exhausted'));
         reconciledFailed += 1;
       } else {
-        // Roll back to 'issued' so the next run retries the send. Bump attempts.
+        // attempts === 0 — claimed but never actually called send. Safe to retry.
         await db
           .update(invoiceRuns)
           .set({
@@ -459,12 +474,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
             attempts: sql`${invoiceRuns.attempts} + 1`,
             updatedAt: new Date(),
           })
-          .where(
-            and(
-              eq(invoiceRuns.orderId, row.orderId),
-              eq(invoiceRuns.billingPeriod, row.billingPeriod),
-            ),
-          );
+          .where(and(eq(invoiceRuns.orderId, row.orderId), eq(invoiceRuns.billingPeriod, row.billingPeriod)));
         reconciledIssued += 1;
       }
     } catch (err) {
@@ -478,39 +488,41 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
 
 /**
  * Retry rows in 'issued' state that didn't reach 'sent' (e.g. recovered from crash).
+ *
+ * Atomically claims ALL eligible rows in one UPDATE-RETURNING transition to
+ * 'sending' + attempts++; concurrent workers won't see the same rows. (N-4)
  */
 export async function retryIssuedRows(db: Db, accessToken: string): Promise<number> {
-  const issued = await db.select().from(invoiceRuns).where(eq(invoiceRuns.status, 'issued'));
+  const claimed = await db
+    .update(invoiceRuns)
+    .set({
+      status: 'sending',
+      lockAcquiredAt: new Date(),
+      attempts: sql`${invoiceRuns.attempts} + 1`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(invoiceRuns.status, 'issued'), lt(invoiceRuns.attempts, MAX_ATTEMPTS)))
+    .returning();
+
   let recovered = 0;
 
-  for (const row of issued) {
-    if (!row.invoiceId) continue;
-    if ((row.attempts ?? 0) >= MAX_ATTEMPTS) {
-      await markFailed(db, row.orderId, row.billingPeriod, new Error('send_retries_exhausted'));
+  for (const row of claimed) {
+    if (!row.invoiceId) {
+      await markFailed(db, row.orderId, row.billingPeriod, new Error('no_invoice_id_on_retry'));
       continue;
     }
 
-    // Look up the order's customer email and document_nr for the send call
     const orders = await db
       .select()
       .from(recurringOrders)
       .where(eq(recurringOrders.bexioOrderId, row.orderId));
     const order = orders[0];
     if (!order?.customerEmail) {
-      await markFailed(
-        db,
-        row.orderId,
-        row.billingPeriod,
-        new Error('no_customer_email_on_retry'),
-      );
+      await markFailed(db, row.orderId, row.billingPeriod, new Error('no_customer_email_on_retry'));
       continue;
     }
 
     try {
-      await transitionTo(db, row.orderId, row.billingPeriod, 'sending', {
-        lockAcquiredAt: new Date(),
-      });
-      // We don't have document_nr cached, so look it up
       const live = await getInvoice(accessToken, row.invoiceId);
       const docNr = live.document_nr;
       await sendInvoice(accessToken, row.invoiceId, {
@@ -525,7 +537,20 @@ export async function retryIssuedRows(db: Db, accessToken: string): Promise<numb
       });
       recovered += 1;
     } catch (err) {
-      await markFailed(db, row.orderId, row.billingPeriod, err);
+      // We already bumped attempts during the claim. Roll back to 'issued' so
+      // future runs can try again, unless this attempt was the last.
+      if (row.attempts != null && row.attempts >= MAX_ATTEMPTS) {
+        await markFailed(db, row.orderId, row.billingPeriod, err);
+      } else {
+        const errorJsonb =
+          err instanceof BexioApiError
+            ? { kind: 'bexio_api', status: err.status, errorClass: err.errorClass, body: err.body.slice(0, 500) }
+            : { kind: 'unknown', message: err instanceof Error ? err.message : String(err) };
+        await db
+          .update(invoiceRuns)
+          .set({ status: 'issued', lockAcquiredAt: null, errorJsonb, updatedAt: new Date() })
+          .where(and(eq(invoiceRuns.orderId, row.orderId), eq(invoiceRuns.billingPeriod, row.billingPeriod)));
+      }
     }
   }
 

@@ -231,24 +231,28 @@ async function processOneSubscription(
       });
     }
 
-    // 5. Mark success + advance next_billing_date
-    await db
-      .update(billingRuns)
-      .set({
-        status: 'success',
-        bexioInvoiceId: invoice.id,
-        executedAt: new Date(),
-      })
-      .where(eq(billingRuns.id, runRow.id));
-
+    // 5. Mark success + advance next_billing_date — ATOMIC (N-6)
+    // A crash between the two writes used to leave the subscription as
+    // forever-due with an idempotency-locked billing_runs row that blocked
+    // every future attempt.
     const newNext = addBillingInterval(
       sub.nextBillingDate,
       sub.interval as SubscriptionInterval,
     );
-    await db
-      .update(subscriptions)
-      .set({ nextBillingDate: newNext, updatedAt: new Date() })
-      .where(eq(subscriptions.id, sub.id));
+    await db.transaction(async (tx) => {
+      await tx
+        .update(billingRuns)
+        .set({
+          status: 'success',
+          bexioInvoiceId: invoice.id,
+          executedAt: new Date(),
+        })
+        .where(eq(billingRuns.id, runRow.id));
+      await tx
+        .update(subscriptions)
+        .set({ nextBillingDate: newNext, updatedAt: new Date() })
+        .where(eq(subscriptions.id, sub.id));
+    });
 
     return {
       kind: 'sent',
