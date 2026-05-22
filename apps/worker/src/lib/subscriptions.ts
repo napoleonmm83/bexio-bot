@@ -52,6 +52,54 @@ function render(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_, k) => vars[k] ?? `{${k}}`);
 }
 
+/**
+ * Hard-validate inputs that would otherwise silently corrupt a billing run:
+ *   - auto_send with no contact email = bot thinks mail went out, customer never receives it (N-7)
+ *   - article without sale_price = CHF 0 invoice gets created + sent (N-8)
+ * Throws before any side-effect so the billing_runs lock can be cleanly removed by the catch in processOneSubscription.
+ */
+export function validateSubscriptionInputs(input: {
+  autoSend: boolean;
+  contactMail: string | null;
+  articles: Array<{ id: number; sale_price?: string | null }>;
+  items: Array<{ id: number; bexioArticleId: number; qty: string }>;
+}): void {
+  if (input.autoSend && !input.contactMail) {
+    throw new Error(
+      'subscription validation: auto_send=true but contact has no email. ' +
+        'Update the contact in bexio or disable auto_send on the subscription.',
+    );
+  }
+  for (const article of input.articles) {
+    const price = article.sale_price;
+    if (price == null || Number(price) === 0) {
+      throw new Error(
+        `subscription validation: article ${article.id} has missing or zero sale_price (${price}). ` +
+          'Set a price in bexio before billing.',
+      );
+    }
+  }
+}
+
+/**
+ * On error inside processOneSubscription, decide whether to delete the
+ * billing_runs lock (so the next daily run can retry) or keep it as 'failed'
+ * for manual review.
+ *
+ * delete-and-retry: transient (5xx, 429) — likely to succeed next time.
+ * keep-failed: permanent validation, auth, local validation — needs human intervention.
+ */
+export type RetryClass = 'delete-and-retry' | 'keep-failed';
+
+export function classifyForRetry(err: unknown): RetryClass {
+  if (err instanceof BexioApiError) {
+    if (err.errorClass === 'transient' || err.errorClass === 'rate_limit') {
+      return 'delete-and-retry';
+    }
+  }
+  return 'keep-failed';
+}
+
 export type ProcessSubscriptionResult =
   | { kind: 'sent'; subscriptionId: number; invoiceId: number; amount: string; scheduledFor: string }
   | { kind: 'skipped_duplicate'; subscriptionId: number; scheduledFor: string }
@@ -143,6 +191,13 @@ async function processOneSubscription(
       items.map((i) => getArticle(accessToken, i.bexioArticleId)),
     );
 
+    validateSubscriptionInputs({
+      autoSend: sub.autoSend,
+      contactMail: contact.mail ?? null,
+      articles: articles.map((a) => ({ id: a.id, sale_price: a.sale_price })),
+      items,
+    });
+
     // 3. Build positions + create invoice
     const positions: BexioInvoicePositionInput[] = items.map((item, idx) => {
       const article = articles[idx]!;
@@ -203,6 +258,22 @@ async function processOneSubscription(
       scheduledFor: scheduledForIso,
     };
   } catch (err) {
+    const retryClass = classifyForRetry(err);
+
+    if (retryClass === 'delete-and-retry') {
+      // Transient failure — clear the lock so next daily run can retry. The
+      // billing_runs row is REMOVED, not marked failed; subscription's
+      // next_billing_date stays as-is (still due). (F-1)
+      await db.delete(billingRuns).where(eq(billingRuns.id, runRow.id));
+      return {
+        kind: 'failed',
+        subscriptionId: sub.id,
+        reason: `transient: ${err instanceof Error ? err.message : String(err)} (will retry next run)`,
+        scheduledFor: scheduledForIso,
+      };
+    }
+
+    // Permanent — keep the failed row for manual review.
     const errorJsonb =
       err instanceof BexioApiError
         ? { kind: 'bexio_api', status: err.status, errorClass: err.errorClass, body: err.body.slice(0, 500) }
