@@ -101,6 +101,28 @@ export function shouldSnapshotFallback(repetitionType: string | undefined): bool
   return repetitionType === 'daily' || repetitionType === 'weekly';
 }
 
+export type ClaimResult =
+  | { kind: 'own' }
+  | { kind: 'duplicate'; existingInvoiceId: number; billingPeriod: string }
+  | { kind: 'concurrent-in-flight' };
+
+/**
+ * Interpret the result of an INSERT-with-ON-CONFLICT claim attempt:
+ *   - inserted has rows → we won the claim, slot is ours
+ *   - inserted empty + existing has invoice_id → another run already finished this slot (real duplicate)
+ *   - inserted empty + existing has no invoice_id → another run is mid-flight on this slot (concurrent)
+ */
+export function interpretClaimResult(
+  inserted: Array<{ orderId: number; status: string; invoiceId: number | null }>,
+  existing: { orderId: number; invoiceId: number | null; billingPeriod: string; status?: string } | null,
+): ClaimResult {
+  if (inserted.length > 0) return { kind: 'own' };
+  if (existing?.invoiceId != null) {
+    return { kind: 'duplicate', existingInvoiceId: existing.invoiceId, billingPeriod: existing.billingPeriod };
+  }
+  return { kind: 'concurrent-in-flight' };
+}
+
 /**
  * Drive one order through the full pipeline in this run.
  * Single API "round trip" per state — no nested locking, transactions are
@@ -140,18 +162,44 @@ export async function processOrder(
   // summary already shows the customer name.
   const ctx = `[order=${order.bexioOrderId} period=${billingPeriod}]`;
 
-  const existingForPeriod = await db
-    .select()
-    .from(invoiceRuns)
-    .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
-  if (existingForPeriod[0]?.invoiceId) {
-    console.log(`${ctx} duplicate guard hit — existing invoice ${existingForPeriod[0].invoiceId}`);
+  // Claim the slot atomically (F-3, N-10). INSERT with status='creating' acts
+  // as a DB-level lock; if it succeeds we own the slot and the bexio call is
+  // safe. If it fails, either someone else already finished (duplicate) or is
+  // mid-flight (concurrent). This prevents two parallel triggers from each
+  // POSTing to bexio and forgetting one of the resulting invoice IDs.
+  const claimInsert = await db
+    .insert(invoiceRuns)
+    .values({
+      orderId: order.bexioOrderId,
+      billingPeriod,
+      status: 'creating',
+      attempts: 1,
+    })
+    .onConflictDoNothing({ target: [invoiceRuns.orderId, invoiceRuns.billingPeriod] })
+    .returning({ orderId: invoiceRuns.orderId, status: invoiceRuns.status, invoiceId: invoiceRuns.invoiceId });
+
+  const existingRow = claimInsert.length === 0
+    ? (await db
+        .select()
+        .from(invoiceRuns)
+        .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod))))[0] ?? null
+    : null;
+
+  const claim = interpretClaimResult(claimInsert, existingRow);
+
+  if (claim.kind === 'duplicate') {
+    console.log(`${ctx} duplicate guard hit — existing invoice ${claim.existingInvoiceId}`);
     return {
       kind: 'skipped_duplicate',
-      existingInvoiceId: existingForPeriod[0].invoiceId,
-      billingPeriod,
+      existingInvoiceId: claim.existingInvoiceId,
+      billingPeriod: claim.billingPeriod,
     };
   }
+  if (claim.kind === 'concurrent-in-flight') {
+    console.log(`${ctx} concurrent run in-flight on same period — backing off`);
+    return { kind: 'not_due', reason: 'concurrent run in progress; try again later' };
+  }
+  // claim.kind === 'own' — proceed
 
   // Step 1: ask bexio to create the next invoice
   let invoice: BexioInvoice | undefined;
@@ -163,6 +211,7 @@ export async function processOrder(
       if (isFullyInvoicedOrderError(err)) {
         if (!shouldSnapshotFallback(repetitionType)) {
           console.log(`${ctx} 422 fully-invoiced on ${repetitionType ?? 'unknown'} order — treating as not_due (snapshot only allowed for daily/weekly)`);
+          await deleteClaim(db, order.bexioOrderId, billingPeriod);
           return {
             kind: 'not_due',
             reason: `422 fully-invoiced (${repetitionType ?? 'unknown'} not-due-this-period; snapshot only allowed for daily/weekly)`,
@@ -178,13 +227,11 @@ export async function processOrder(
           console.log(`${ctx} snapshot fallback → invoice ${invoice.id}`);
         } catch (fallbackErr) {
           if (fallbackErr instanceof BexioApiError) {
-            // Full body to console for Coolify logs / grep-ability. result.reason
-            // gets a longer slice (800 chars) so Discord notify also surfaces the
-            // bexio validation message instead of cutting off mid-error.
             console.error(`${ctx} snapshot fallback FAILED status=${fallbackErr.status} class=${fallbackErr.errorClass} body=${fallbackErr.body}`);
           } else {
             console.error(`${ctx} snapshot fallback FAILED (non-BexioApiError):`, fallbackErr);
           }
+          await deleteClaim(db, order.bexioOrderId, billingPeriod);
           return {
             kind: 'failed',
             reason: fallbackErr instanceof BexioApiError
@@ -194,92 +241,70 @@ export async function processOrder(
           };
         }
       } else {
-      // 403 = scope mismatch or permission denied. Distinct from "not due".
-      // Body usually mentions "not allowed" or "permission".
-      if (err.status === 403) {
-        return {
-          kind: 'failed',
-          reason: `scope/permission denied — bexio 403: ${err.body.slice(0, 150)}. Likely missing kb_order_edit scope; re-auth needed.`,
-          bexioStatus: 403,
-        };
-      }
-      // 401 = token invalid. Worker should refresh first, but the catch-net is here too.
-      if (err.status === 401) {
-        return {
-          kind: 'failed',
-          reason: `token invalid — bexio 401. Run bun run oauth-setup to re-auth.`,
-          bexioStatus: 401,
-        };
-      }
-      // 4xx-permanent that aren't auth: most likely "no repetition due" or
-      // "invalid order state". Treat as not_due — recurring will retry tomorrow.
-      // bexio's "not due" responses typically include phrases like "not_due",
-      // "no repetition" or "nothing to invoice" — we don't pattern-match to keep
-      // the heuristic loose; the differentiation 401/403 above catches the auth case.
-      if (err.errorClass === 'permanent') {
-        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → ${err.status} permanent (treated as not_due): ${err.body.slice(0, 300)}`);
-        return { kind: 'not_due', reason: err.body.slice(0, 200) };
-      }
-      console.error(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice FAILED status=${err.status} class=${err.errorClass} body=${err.body}`);
+        // 403 = scope mismatch or permission denied.
+        if (err.status === 403) {
+          await deleteClaim(db, order.bexioOrderId, billingPeriod);
+          return {
+            kind: 'failed',
+            reason: `scope/permission denied — bexio 403: ${err.body.slice(0, 150)}. Likely missing kb_order_edit scope; re-auth needed.`,
+            bexioStatus: 403,
+          };
+        }
+        if (err.status === 401) {
+          await deleteClaim(db, order.bexioOrderId, billingPeriod);
+          return {
+            kind: 'failed',
+            reason: `token invalid — bexio 401. Run bun run oauth-setup to re-auth.`,
+            bexioStatus: 401,
+          };
+        }
+        if (err.errorClass === 'permanent') {
+          console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → ${err.status} permanent (treated as not_due): ${err.body.slice(0, 300)}`);
+          await deleteClaim(db, order.bexioOrderId, billingPeriod);
+          return { kind: 'not_due', reason: err.body.slice(0, 200) };
+        }
+        console.error(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice FAILED status=${err.status} class=${err.errorClass} body=${err.body}`);
       }
     } else {
       console.error(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice FAILED (non-BexioApiError):`, err);
     }
-    if (!invoice) return {
-      kind: 'failed',
-      reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 800)}` : String(err),
-      bexioStatus: err instanceof BexioApiError ? err.status : undefined,
-    };
+    if (!invoice) {
+      await deleteClaim(db, order.bexioOrderId, billingPeriod);
+      return {
+        kind: 'failed',
+        reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 800)}` : String(err),
+        bexioStatus: err instanceof BexioApiError ? err.status : undefined,
+      };
+    }
   }
   if (!invoice) {
+    await deleteClaim(db, order.bexioOrderId, billingPeriod);
     return { kind: 'failed', reason: 'invoice creation returned no invoice' };
   }
 
-  // Step 2: insert invoice_runs row. ON CONFLICT means bexio gave us an invoice for
-  // a period we already processed — that's a duplicate. Skip and log.
-  const inserted = await db
-    .insert(invoiceRuns)
-    .values({
-      orderId: order.bexioOrderId,
-      billingPeriod,
-      invoiceId: invoice.id,
-      status: 'created',
-      attempts: 1,
-    })
-    .onConflictDoNothing({ target: [invoiceRuns.orderId, invoiceRuns.billingPeriod] })
-    .returning({ orderId: invoiceRuns.orderId });
-
-  if (inserted.length === 0) {
-    // Already had a row for (order_id, billing_period). Read existing invoice_id.
-    const existing = await db
-      .select()
-      .from(invoiceRuns)
-      .where(
-        and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)),
-      );
-    return {
-      kind: 'skipped_duplicate',
-      existingInvoiceId: existing[0]?.invoiceId ?? invoice.id,
-      billingPeriod,
-    };
-  }
+  // Bexio call succeeded — fill in invoice_id on our claim row.
+  await db
+    .update(invoiceRuns)
+    .set({ invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
+    .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
 
   // Step 3: drive through issuing → issued → sending → sent
+  // wasIssued tracks whether issueInvoice() succeeded so we can roll back to
+  // 'issued' (not 'failed') on send errors — letting retryIssuedRows pick the
+  // row up next run instead of marking it terminally failed. (F-2)
+  let wasIssued = false;
   try {
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issuing');
     await issueInvoice(accessToken, invoice.id);
     console.log(`${ctx} issued invoice ${invoice.id} (${invoice.document_nr})`);
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issued', { issuedAt: new Date() });
+    wasIssued = true;
 
     if (!order.customerEmail) {
-      // Can't send without an email. Mark as failed so Marcus sees it and fixes
-      // the contact's email in bexio. The invoice is festgeschrieben (issued), so
-      // Marcus can also send it manually from bexio's UI.
-      throw new BexioApiError(
-        0,
-        'permanent',
-        `No customer email for ${order.customerName}. Update the contact in bexio.`,
-      );
+      // Can't send without an email. Throw a plain Error (F-9 — was BexioApiError(0)).
+      // wasIssued=true at this point, so the catch will leave status='issued' for
+      // the next run to pick up via retryIssuedRows once Marcus fixes the contact.
+      throw new Error(`No customer email for ${order.customerName}. Update the contact in bexio.`);
     }
 
     const docNr = invoice.document_nr;
@@ -305,6 +330,28 @@ export async function processOrder(
     } else {
       console.error(`${ctx} issue/send FAILED invoice=${invoice.id}:`, err);
     }
+
+    if (wasIssued) {
+      // Invoice is festgeschrieben in bexio. Don't mark failed — let
+      // retryIssuedRows pick it up on the next run. Persist the error to
+      // error_jsonb for visibility but keep status='issued'. (F-2)
+      const errorJsonb =
+        err instanceof BexioApiError
+          ? { kind: 'bexio_api', status: err.status, errorClass: err.errorClass, body: err.body.slice(0, 500), at: 'send' as const }
+          : { kind: 'unknown' as const, message: err instanceof Error ? err.message : String(err), at: 'send' as const };
+      await db
+        .update(invoiceRuns)
+        .set({ status: 'issued', errorJsonb, lockAcquiredAt: null, updatedAt: new Date() })
+        .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+      return {
+        kind: 'failed',
+        reason: `send failed but invoice ${invoice.id} is issued — will retry next run: ${err instanceof Error ? err.message : String(err)}`,
+        bexioStatus: err instanceof BexioApiError ? err.status : undefined,
+        invoiceId: invoice.id,
+      };
+    }
+
+    // Issue itself failed — mark fully failed.
     await markFailed(db, order.bexioOrderId, billingPeriod, err);
     return {
       kind: 'failed',
@@ -313,6 +360,12 @@ export async function processOrder(
       invoiceId: invoice.id,
     };
   }
+}
+
+async function deleteClaim(db: Db, orderId: number, billingPeriod: string): Promise<void> {
+  await db
+    .delete(invoiceRuns)
+    .where(and(eq(invoiceRuns.orderId, orderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
 }
 
 async function transitionTo(
