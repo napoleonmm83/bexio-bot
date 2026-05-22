@@ -12,7 +12,7 @@ import type { RequestHandler } from './$types.ts';
 import { getDb, botRuns } from '@bexio-bot/db';
 import { verifyCfAccess, CfAccessError } from '$lib/server/cf-access.ts';
 
-const STALE_MS = 30 * 60 * 1000;
+const STALE_MS = Number(process.env.WORKER_RUN_STALE_MS ?? 2 * 60 * 60 * 1000);
 
 export const GET: RequestHandler = async ({ request, params }) => {
   try {

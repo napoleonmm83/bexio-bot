@@ -20,7 +20,10 @@ import { getDb, botRuns } from '@bexio-bot/db';
 import { runDaily } from '@bexio-bot/worker/run';
 import { verifyCfAccess, CfAccessError } from '$lib/server/cf-access.ts';
 
-const STALE_MS = 30 * 60 * 1000; // 30 minutes
+// A real production run can exceed 30 min when many orders × bexio's 1.1s
+// rate-limit pacing. Two hours is a defensive upper bound; override via
+// WORKER_RUN_STALE_MS env var if the order count grows beyond that. (F-5)
+const STALE_MS = Number(process.env.WORKER_RUN_STALE_MS ?? 2 * 60 * 60 * 1000);
 
 export const POST: RequestHandler = async ({ request }) => {
   try {

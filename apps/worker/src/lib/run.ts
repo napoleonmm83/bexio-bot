@@ -126,7 +126,12 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   let subscriptionResults: ProcessSubscriptionResult[] = [];
   if (!options.dryRun) {
     try {
-      const today = new Date(new Date().toISOString().slice(0, 10) + 'T00:00:00Z');
+      // Use the current instant (not UTC-midnight-today). Subscriptions store
+      // next_billing_date as a date (midnight in whatever TZ they were inserted),
+      // so any past-day's stored date will compare as <= now(). Avoids the
+      // UTC vs Europe/Zurich mismatch that missed subscriptions due between
+      // 22:00 UTC and 24:00 UTC at month boundaries. (F-4)
+      const today = new Date();
       subscriptionResults = await processSubscriptions(db, accessToken, today);
     } catch (err) {
       errors.push({
