@@ -9,14 +9,27 @@ export const BEXIO_AUTH_BASE = 'https://auth.bexio.com/realms/bexio/protocol/ope
 
 const MIN_GAP_MS = 1100; // ~54 req/min, comfortably below bexio's typical 60/min limit
 let lastCallAt = 0;
+let paceChain: Promise<void> = Promise.resolve();
 
+/**
+ * Serialize pace() across concurrent callers. The previous implementation
+ * shared a mutable lastCallAt without any queue, so two callers calling
+ * pace() within MIN_GAP_MS would both sleep until the same instant and
+ * then burst. With Promise.all in subscriptions.ts (multiple getArticle
+ * calls) this caused 429 rate-limit errors. (N-9)
+ */
 async function pace(): Promise<void> {
-  const now = Date.now();
-  const elapsed = now - lastCallAt;
-  if (elapsed < MIN_GAP_MS) {
-    await new Promise((r) => setTimeout(r, MIN_GAP_MS - elapsed));
-  }
-  lastCallAt = Date.now();
+  const myTurn = paceChain.then(async () => {
+    const now = Date.now();
+    const elapsed = now - lastCallAt;
+    if (elapsed < MIN_GAP_MS) {
+      await new Promise((r) => setTimeout(r, MIN_GAP_MS - elapsed));
+    }
+    lastCallAt = Date.now();
+  });
+  // Don't let one failure poison the chain for future callers.
+  paceChain = myTurn.catch(() => undefined);
+  await myTurn;
 }
 
 function classifyStatus(status: number): BexioErrorClass {
