@@ -25,9 +25,12 @@ export async function listRecurringOrders(accessToken: string): Promise<BexioOrd
     if (page.length < PAGE_LIMIT) break;
     offset += PAGE_LIMIT;
 
-    // Hard cap to avoid infinite loops if bexio behavior changes
+    // Hard cap to avoid infinite loops if bexio behavior changes — degrade
+    // gracefully (log + break) rather than throwing, which would abort the
+    // entire daily run before any orders get processed. (F-11)
     if (offset > 5000) {
-      throw new Error('listRecurringOrders: > 5000 orders, refusing to page further');
+      console.warn('listRecurringOrders: > 5000 orders, capping at 5000 for safety');
+      break;
     }
   }
 

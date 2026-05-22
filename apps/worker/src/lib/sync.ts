@@ -50,6 +50,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
     let interval: CanonicalInterval;
     let nextBillingDate: Date;
     let unsupportedType: string | undefined;
+    let repetitionFetchOk = true;
     try {
       const rep = await getOrderRepetition(accessToken, o.id);
       interval = mapRepetitionToInterval(rep);
@@ -58,8 +59,7 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
         unsupportedType = rep?.repetition?.type ?? 'unknown';
       }
     } catch {
-      // /repetition can 404 for non-recurring orders; we filter is_recurring=true upstream
-      // so this should be rare. Fall back to monthly + today as the safest default.
+      repetitionFetchOk = false;
       interval = 'monthly';
       nextBillingDate = new Date();
     }
@@ -110,7 +110,9 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
           customerEmail,
           interval,
           expectedAmount: o.total,
-          nextBillingDate, // refresh — start date may shift in bexio
+          // Preserve existing nextBillingDate if repetition fetch failed —
+          // overwriting with today would corrupt a previously-good value. (F-10)
+          ...(repetitionFetchOk ? { nextBillingDate } : {}),
           bexioStatus,
           bexioStatusId: o.kb_item_status_id ?? null,
           syncedAt: new Date(),
@@ -136,11 +138,18 @@ export async function syncRecurringOrders(db: Db, accessToken: string): Promise<
   // invoice_runs has no FK back to recurring_orders so orphan rows there are fine.
   let removedOrders = 0;
   const seenArray = [...seenIds];
-  const deleteCondition = seenArray.length > 0
-    ? notInArray(recurringOrders.bexioOrderId, seenArray)
-    : sql`true`; // if bexio returns zero orders, wipe everything (rare)
-  const deleted = await db.delete(recurringOrders).where(deleteCondition).returning({ id: recurringOrders.bexioOrderId });
-  removedOrders = deleted.length;
+  if (seenArray.length === 0) {
+    // bexio returned zero recurring orders. Almost certainly a transient API
+    // issue, not a legitimate "Marcus deleted everything". Skip the orphan
+    // cleanup this run — wiping would lose all opt-in enabled flags. (F-7)
+    console.warn('sync: bexio returned zero recurring orders — skipping orphan cleanup to protect cache');
+  } else {
+    const deleted = await db
+      .delete(recurringOrders)
+      .where(notInArray(recurringOrders.bexioOrderId, seenArray))
+      .returning({ id: recurringOrders.bexioOrderId });
+    removedOrders = deleted.length;
+  }
 
   return { total: orders.length, newlyAdded, alreadyTracked, removedOrders, newOrders, unsupportedOrders };
 }
