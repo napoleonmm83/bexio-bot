@@ -31,14 +31,24 @@ import {
   isSupportedBexioInterval,
   BexioApiError,
   type BexioInvoice,
+  type BexioOrderRepetition,
 } from '@bexio-bot/bexio-client';
 import { formatBillingPeriod } from './billing-period.ts';
+import { isOrderDue } from './next-billing.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
 
 const MAX_ATTEMPTS = 3;
 const LOCK_STALE_MS = 5 * 60 * 1000;
+
+// Catch-up tolerance for the due-gate: an order is billed on its scheduled
+// occurrence day and for this many days after (covers a skipped daily run).
+// Never back-bills older periods. Override via env for tuning.
+const DUE_WINDOW_DAYS = (() => {
+  const raw = Number(process.env.ORDER_DUE_WINDOW_DAYS ?? '3');
+  return Number.isFinite(raw) && raw >= 0 ? raw : 3;
+})();
 
 export type ProcessOrderResult =
   | { kind: 'sent'; invoiceId: number; amount: string; billingPeriod: string }
@@ -140,6 +150,7 @@ export async function processOrder(
   // a later successful fetch would use a different period key for the same
   // logical day, allowing duplicate invoices. (N-3)
   let repetitionType: string | undefined;
+  let repetition: BexioOrderRepetition | undefined;
   let repetitionFetchSucceeded = false;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -151,6 +162,7 @@ export async function processOrder(
           bexioType: rep?.repetition?.type ?? 'unknown',
         };
       }
+      repetition = rep;
       repetitionType = rep?.repetition?.type;
       repetitionFetchSucceeded = true;
       break;
@@ -167,7 +179,28 @@ export async function processOrder(
     };
   }
 
-  let billingPeriod = formatBillingPeriod(invoiceDate, repetitionType);
+  // Due-gate: bexio's POST /kb_order/{id}/invoice is NOT a recurrence trigger —
+  // it bills on demand regardless of the schedule — so the bot must decide
+  // due-ness itself. An order is due only on its scheduled occurrence day (plus
+  // a small catch-up window for skipped runs); it never back-bills older
+  // periods. Without this gate every enabled monthly/yearly order was billed on
+  // the first run after activation, and orders onboarded with an old start date
+  // would have their last past period billed immediately. (daily only "worked"
+  // by coincidence — it's due every day.)
+  const dueOccurrence = isOrderDue(repetition, new Date(), DUE_WINDOW_DAYS);
+  if (!dueOccurrence) {
+    console.log(`[order=${order.bexioOrderId}] not due today (window=${DUE_WINDOW_DAYS}d) — next scheduled occurrence is in the future`);
+    return {
+      kind: 'not_due',
+      reason: `not due today — next scheduled occurrence is in the future (catch-up window ${DUE_WINDOW_DAYS}d)`,
+    };
+  }
+
+  // Anchor the billing_period key to the occurrence date, not the run date, so
+  // the (order_id, billing_period) dedup tracks the real schedule: one invoice
+  // per occurrence, robust to a run that fires a few days into the period.
+  const occurrenceIso = dueOccurrence.toISOString();
+  let billingPeriod = formatBillingPeriod(occurrenceIso, repetitionType);
   // Stable prefix on every log line — pipe Coolify logs through `grep "[order=N"`
   // to follow one order's full pipeline. Keep prefix short; the orchestrator's
   // summary already shows the customer name.

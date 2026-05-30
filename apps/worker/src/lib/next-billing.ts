@@ -147,3 +147,105 @@ export function computeNextBilling(
 
   return zurichDayToUtcDate(candidate);
 }
+
+/**
+ * Compute the CURRENT due occurrence: the latest scheduled occurrence on or
+ * before `now`. This is the f(missing) due-gate for the order pipeline.
+ *
+ *   - null  → not due: the schedule hasn't started yet (start in the future),
+ *             the recurrence ended before today, or the config is unparseable.
+ *   - Date  → the order is due for that occurrence's billing period. The
+ *             state machine derives the billing_period key from this date, so
+ *             the (order_id, billing_period) dedup is anchored to the real
+ *             schedule (one invoice per occurrence) instead of to the run day.
+ *
+ * Counterpart to computeNextBilling: that one always points at the next FUTURE
+ * occurrence (good for the dashboard), this one points at the most recent due
+ * occurrence (good for "should we bill right now?"). bexio's
+ * POST /kb_order/{id}/invoice is NOT a recurrence trigger — it bills on demand
+ * — so the bot has to decide due-ness itself, here.
+ *
+ * On a missed run, this catches up at most ONE occurrence (the latest); it
+ * never bills a backlog of skipped periods.
+ */
+export function computeCurrentOccurrence(
+  rep: BexioOrderRepetition | null | undefined,
+  now: Date = new Date(),
+): Date | null {
+  if (!rep?.start || !rep.repetition) return null;
+
+  const r = rep.repetition;
+  const { type, interval, schedule } = r;
+  if (!type || interval < 1) return null;
+
+  const today = getZurichParts(now);
+  const end = rep.end ? getZurichParts(rep.end) : null;
+  // If the recurrence ended before today, the latest billable occurrence is
+  // capped at `end` rather than `today`.
+  const horizon = end && isAfter(today, end) ? end : today;
+
+  // Weekly: walk day-by-day, remembering the last weekday-match within horizon.
+  if (type === 'weekly') {
+    const weekdays = (r.weekdays as string[] | undefined) ?? [];
+    if (weekdays.length === 0) return null;
+    const targetDays = new Set(
+      weekdays.map((w) => WEEKDAY_INDEX[w.toLowerCase()]).filter((n): n is number => n !== undefined),
+    );
+    if (targetDays.size === 0) return null;
+
+    let cursor = getZurichParts(rep.start);
+    let last: Parts | null = null;
+    for (let i = 0; i < 3650; i++) {
+      if (isAfter(cursor, horizon)) break;
+      const utc = new Date(Date.UTC(cursor.y, cursor.m - 1, cursor.d));
+      if (targetDays.has(utc.getUTCDay())) last = cursor;
+      cursor = addDays(cursor, 1);
+    }
+    return last ? zurichDayToUtcDate(last) : null;
+  }
+
+  // daily / monthly / quarterly / half_year / yearly: interval-stepping.
+  let candidate = applySchedule(getZurichParts(rep.start), schedule);
+  let last: Parts | null = null;
+  let safetyBudget = 3650;
+  while (!isAfter(candidate, horizon) && safetyBudget-- > 0) {
+    last = candidate;
+    candidate = applySchedule(addInterval(candidate, type, interval), schedule);
+  }
+  if (safetyBudget <= 0) return null;
+
+  return last ? zurichDayToUtcDate(last) : null;
+}
+
+/**
+ * The order's due-gate: is the order due to be billed right now?
+ *
+ *   - Date → due; bill for this occurrence's billing period.
+ *   - null → not due; skip.
+ *
+ * An order is due iff its most recent scheduled occurrence falls within the
+ * last `windowDays` days (inclusive of today). windowDays=0 means "only on the
+ * exact occurrence day". The window is a catch-up tolerance: if the daily run
+ * is skipped (outage), the occurrence is still billed for up to `windowDays`
+ * afterwards. It deliberately does NOT back-bill older periods — an order whose
+ * last occurrence is weeks/years in the past (e.g. one freshly onboarded into
+ * the bot) is NOT billed; it waits for its next scheduled occurrence. This
+ * matches the "Nächste Fälligkeit" date shown in the dashboard.
+ */
+export function isOrderDue(
+  rep: BexioOrderRepetition | null | undefined,
+  now: Date = new Date(),
+  windowDays = 0,
+): Date | null {
+  const occurrence = computeCurrentOccurrence(rep, now);
+  if (!occurrence) return null;
+
+  const occ = getZurichParts(occurrence);
+  const today = getZurichParts(now);
+  const occMidnightUtc = Date.UTC(occ.y, occ.m - 1, occ.d);
+  const todayMidnightUtc = Date.UTC(today.y, today.m - 1, today.d);
+  const diffDays = Math.round((todayMidnightUtc - occMidnightUtc) / 86_400_000);
+
+  // diffDays is always >= 0 (occurrence is on/before today by construction).
+  return diffDays <= windowDays ? occurrence : null;
+}
