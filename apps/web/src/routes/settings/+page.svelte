@@ -95,6 +95,14 @@
   <section class="card">
     <h2>Rechnungsstellung</h2>
     <form method="POST" action="?/invoicing" use:enhance>
+      <label class="check">
+        <input type="checkbox" name="auto_send_invoices" value="true"
+               checked={data.values.auto_send_invoices === 'true'} />
+        <span>Rechnungen automatisch versenden</span>
+      </label>
+      <p class="help indent">Aus = Rechnungen werden als Entwurf in bexio erstellt (nicht festgeschrieben,
+        nicht gesendet) — du schreibst sie manuell fest und versendest sie selbst in bexio.</p>
+
       <div class="field narrow">
         <label for="order_due_window_days">Fälligkeits-Toleranz (Tage)</label>
         <input id="order_due_window_days" name="order_due_window_days" type="number" min="0" step="1"

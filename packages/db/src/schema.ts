@@ -79,6 +79,10 @@ export const recurringOrders = pgTable(
     customerName: text('customer_name').notNull(),
     customerEmail: text('customer_email'),
     interval: recurringIntervalEnum('interval').notNull(),
+    // Raw bexio repetition interval multiplier (e.g. monthly × 2 = bi-monthly).
+    // The canonical `interval` enum only encodes 3/6/12; this keeps the true
+    // multiplier for honest dashboard labels ("alle N Monate").
+    intervalMultiplier: integer('interval_multiplier').notNull().default(1),
     expectedAmount: text('expected_amount').notNull(), // CHF stored as string for exact decimals
     nextBillingDate: timestamp('next_billing_date', { withTimezone: true }).notNull(),
     enabled: boolean('enabled').notNull().default(false),

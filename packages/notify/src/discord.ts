@@ -31,7 +31,7 @@ export type DiscordRunReport = {
   finishedAt: Date;
   results: Array<{
     customerName: string;
-    kind: 'sent' | 'not_due' | 'skipped_duplicate' | 'skipped_unsupported' | 'failed';
+    kind: 'sent' | 'created_unsent' | 'not_due' | 'skipped_duplicate' | 'skipped_unsupported' | 'failed';
     invoiceId?: number;
     amount?: string;
     billingPeriod?: string;
@@ -130,6 +130,13 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
     fields.push({
       name: `↺ ${truncate(d.customerName, 64)}`,
       value: `bereits erstellt für ${d.billingPeriod ?? '(unbekannt)'}`,
+      inline: true,
+    });
+  }
+  for (const c of r.results.filter((x) => x.kind === 'created_unsent').slice(0, 12)) {
+    fields.push({
+      name: `📝 ${truncate(c.customerName, 64)}`,
+      value: c.amount && c.invoiceId ? `Entwurf · CHF ${c.amount} · bexio #${c.invoiceId}` : 'Entwurf erstellt (nicht gesendet)',
       inline: true,
     });
   }
@@ -234,7 +241,7 @@ function pickStatus(r: DiscordRunReport): 'success' | 'failed' | 'partial' | 'no
     r.results.filter((x) => x.kind === 'failed').length +
     r.subscriptionResults.filter((x) => x.kind === 'failed').length;
   const sent =
-    r.results.filter((x) => x.kind === 'sent' || x.kind === 'skipped_duplicate').length +
+    r.results.filter((x) => x.kind === 'sent' || x.kind === 'created_unsent' || x.kind === 'skipped_duplicate').length +
     r.subscriptionResults.filter((x) => x.kind === 'sent' || x.kind === 'skipped_duplicate').length;
   if (failed > 0 && sent > 0) return 'partial';
   if (failed > 0) return 'failed';

@@ -48,10 +48,11 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 // the due-gate: an order is billed on its scheduled occurrence day and for this
 // many days after (covers a skipped daily run); never back-bills older periods.
 export type MailConfig = { mailSubject: string; mailMessage: string };
-export type ProcessOrderConfig = MailConfig & { dueWindowDays: number };
+export type ProcessOrderConfig = MailConfig & { dueWindowDays: number; autoSend: boolean };
 
 export type ProcessOrderResult =
   | { kind: 'sent'; invoiceId: number; amount: string; billingPeriod: string }
+  | { kind: 'created_unsent'; invoiceId: number; amount: string; billingPeriod: string }
   | { kind: 'not_due'; reason: string }
   | { kind: 'skipped_duplicate'; existingInvoiceId: number; billingPeriod: string }
   | { kind: 'skipped_unsupported'; bexioType: string }
@@ -377,6 +378,15 @@ export async function processOrder(
       .update(invoiceRuns)
       .set({ invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
       .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+  }
+
+  // Auto-send off: leave the invoice as a created DRAFT (not issued, not sent)
+  // for manual handling in bexio. 'created' is a stable resting state — neither
+  // retryIssuedRows ('issued') nor reconcileInFlightSends ('sending') touches it,
+  // so it is never auto-sent later.
+  if (!config.autoSend) {
+    console.log(`${ctx} auto-send off — invoice ${invoice.id} left as draft (created, not issued/sent)`);
+    return { kind: 'created_unsent', invoiceId: invoice.id, amount: invoice.total, billingPeriod };
   }
 
   // Step 3: drive through issuing → issued → sending → sent

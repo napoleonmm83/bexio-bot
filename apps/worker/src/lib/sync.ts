@@ -54,6 +54,7 @@ type ContactCache = Map<number, { name: string; email: string | null; postcode: 
 
 type MappedOrderRow = {
   interval: CanonicalInterval;
+  intervalMultiplier: number;
   nextBillingDate: Date;
   customerName: string;
   customerEmail: string | null;
@@ -74,12 +75,15 @@ async function buildOrderRow(
   contactCache: ContactCache,
 ): Promise<MappedOrderRow> {
   let interval: CanonicalInterval;
+  let intervalMultiplier = 1;
   let nextBillingDate: Date;
   let unsupportedType: string | undefined;
   let repetitionFetchOk = true;
   try {
     const rep = await getOrderRepetition(accessToken, o.id);
     interval = mapRepetitionToInterval(rep);
+    const rawInterval = rep?.repetition?.interval;
+    intervalMultiplier = typeof rawInterval === 'number' && rawInterval >= 1 ? rawInterval : 1;
     const nb = computeNextBilling(rep);
     nextBillingDate = nb ?? new Date();
     if (!isSupportedBexioInterval(rep)) {
@@ -131,6 +135,7 @@ async function buildOrderRow(
 
   return {
     interval,
+    intervalMultiplier,
     nextBillingDate,
     customerName: cached.name,
     customerEmail: cached.email,
@@ -177,7 +182,7 @@ export async function syncRecurringOrders(
 
   for (const o of orders) {
     seenIds.add(o.id);
-    const { interval, nextBillingDate, customerName, customerEmail, bexioStatus, repetitionFetchOk, unsupportedType, driftWarning } =
+    const { interval, intervalMultiplier, nextBillingDate, customerName, customerEmail, bexioStatus, repetitionFetchOk, unsupportedType, driftWarning } =
       await buildOrderRow(accessToken, o, contactCache);
     if (driftWarning) {
       driftWarnings.push({ bexioOrderId: o.id, customerName, detail: driftWarning });
@@ -205,6 +210,7 @@ export async function syncRecurringOrders(
         customerName,
         customerEmail,
         interval,
+        intervalMultiplier,
         expectedAmount: o.total,
         nextBillingDate,
         enabled: false,
@@ -218,6 +224,7 @@ export async function syncRecurringOrders(
           customerName,
           customerEmail,
           interval,
+          intervalMultiplier,
           expectedAmount: o.total,
           // Preserve existing nextBillingDate if repetition fetch failed —
           // overwriting with today would corrupt a previously-good value. (F-10)
@@ -317,6 +324,7 @@ export async function importOrderById(
       customerName: row.customerName,
       customerEmail: row.customerEmail,
       interval: row.interval,
+      intervalMultiplier: row.intervalMultiplier,
       expectedAmount: order.total,
       nextBillingDate: row.nextBillingDate,
       enabled,
@@ -330,6 +338,7 @@ export async function importOrderById(
         customerName: row.customerName,
         customerEmail: row.customerEmail,
         interval: row.interval,
+        intervalMultiplier: row.intervalMultiplier,
         expectedAmount: order.total,
         ...(row.repetitionFetchOk ? { nextBillingDate: row.nextBillingDate } : {}),
         // Explicit user action: force the enabled state (unlike sync).

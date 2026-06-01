@@ -19,6 +19,7 @@ type SettingsValues = {
   order_due_window_days: string;
   invoice_mail_subject: string;
   invoice_mail_message: string;
+  auto_send_invoices: string;
   notifications_enabled: string;
   discord_webhook_url: string;
   dashboard_url: string;
@@ -33,6 +34,7 @@ const DEFAULTS: Record<string, string> = {
   order_due_window_days: '3',
   invoice_mail_subject: DEFAULT_MAIL_SUBJECT,
   invoice_mail_message: DEFAULT_MAIL_MESSAGE,
+  auto_send_invoices: 'true',
   notifications_enabled: 'true',
   discord_webhook_url: '',
   dashboard_url: DEFAULT_DASHBOARD_URL,
@@ -71,6 +73,7 @@ export const load: PageServerLoad = async () => {
     order_due_window_days: values.order_due_window_days,
     invoice_mail_subject: values.invoice_mail_subject,
     invoice_mail_message: values.invoice_mail_message,
+    auto_send_invoices: values.auto_send_invoices,
     notifications_enabled: values.notifications_enabled,
     discord_webhook_url: webhookSet ? WEBHOOK_MASK : '',
     dashboard_url: values.dashboard_url,
@@ -137,6 +140,7 @@ export const actions: Actions = {
     await setSetting(db, 'invoice_mail_subject', subject);
     await setSetting(db, 'invoice_mail_message', message);
     await setSetting(db, 'order_due_window_days', String(due));
+    await setSetting(db, 'auto_send_invoices', boolField(data.get('auto_send_invoices')));
 
     return { section: 'invoicing', success: true };
   },

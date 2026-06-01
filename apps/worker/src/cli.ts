@@ -3,13 +3,18 @@
 //   bun run worker:dry          — same as above but WORKER_DRY_RUN=true forced
 //   bun run worker --check      — connectivity check (Postgres + bexio-API), no mutations
 
-import { closeDb, getDb } from '@bexio-bot/db';
+import { closeDb, getDb, getSetting } from '@bexio-bot/db';
 import { sql } from 'drizzle-orm';
 import { getValidAccessToken } from '@bexio-bot/bexio-client';
 import { runDaily } from './lib/run.ts';
+import { syncRecurringOrders } from './lib/sync.ts';
 
 const args = process.argv.slice(2);
-const mode = args.includes('--check') ? 'check' : 'run';
+const mode = args.includes('--check')
+  ? 'check'
+  : args.includes('--sync')
+    ? 'sync'
+    : 'run';
 const dryRun = process.env.WORKER_DRY_RUN === 'true';
 const onlyOrderId = parseOnlyOrderId(args, process.env.WORKER_ONLY_ORDER_ID);
 
@@ -28,6 +33,21 @@ try {
     console.log('  bexio token:    ', `${token.length} chars (refresh-aware)`);
 
     console.log('OK — connectivity verified.');
+  } else if (mode === 'sync') {
+    // Incremental order sync only — NO billing. Hit by the every-2h Coolify
+    // scheduled task so new/changed bexio orders surface within hours.
+    console.log('bexio-bot worker — incremental sync (no billing)');
+    const enabled = (await getSetting(db, 'incremental_sync_enabled', 'true')) !== 'false';
+    if (!enabled) {
+      console.log('  incremental_sync_enabled=false — skipping');
+    } else {
+      const token = await getValidAccessToken(db);
+      const result = await syncRecurringOrders(db, token, { mode: 'incremental' });
+      console.log(`  checked: ${result.total}  new: ${result.newlyAdded}  updated: ${result.alreadyTracked}`);
+      for (const n of result.newOrders) console.log(`    + #${n.bexioOrderId} ${n.customerName} (${n.interval})`);
+      for (const d of result.driftWarnings) console.log(`    ⚠ drift #${d.bexioOrderId} ${d.customerName}: ${d.detail}`);
+    }
+    console.log('SYNC DONE');
   } else {
     console.log('');
     console.log('bexio-bot worker run');
@@ -71,6 +91,8 @@ try {
       console.log(`  ${symbol} #${r.orderId} ${r.customerName.slice(0, 40)} — ${r.result.kind}`);
       if (r.result.kind === 'sent') {
         console.log(`    invoice ${r.result.invoiceId} CHF ${r.result.amount} period ${r.result.billingPeriod}`);
+      } else if (r.result.kind === 'created_unsent') {
+        console.log(`    draft invoice ${r.result.invoiceId} CHF ${r.result.amount} period ${r.result.billingPeriod} (auto-send off)`);
       } else if (r.result.kind === 'not_due') {
         console.log(`    ${r.result.reason}`);
       } else if (r.result.kind === 'skipped_duplicate') {
@@ -114,6 +136,7 @@ try {
 function symbolFor(kind: string): string {
   switch (kind) {
     case 'sent': return '✓';
+    case 'created_unsent': return '📝';
     case 'not_due': return '·';
     case 'skipped_duplicate': return '↺';
     case 'skipped_unsupported': return '⚠';

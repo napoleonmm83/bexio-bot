@@ -60,8 +60,21 @@
     weekly: 'wöchentlich',
     monthly: 'monatlich',
     quarterly: 'vierteljährlich',
+    semi_annual: 'halbjährlich',
     yearly: 'jährlich',
   };
+
+  // Honest frequency label. The multiplier is only unambiguous for the base
+  // enums daily/weekly/monthly (e.g. monthly×2 = "alle 2 Monate"); quarterly/
+  // semi_annual/yearly already fold their multiplier into the enum.
+  function freqLabel(interval: string | null | undefined, mult: number | null | undefined): string {
+    const m = mult ?? 1;
+    if (m > 1 && (interval === 'daily' || interval === 'weekly' || interval === 'monthly')) {
+      const unit = interval === 'daily' ? 'Tage' : interval === 'weekly' ? 'Wochen' : 'Monate';
+      return `alle ${m} ${unit}`;
+    }
+    return INTERVAL_LABEL[interval ?? ''] ?? interval ?? '—';
+  }
 
   // ── derived row enrichment ──────────────────────────────────
   type Row = (typeof data.orders)[number] & {
@@ -156,7 +169,7 @@
   });
 
   const intervalsInData = $derived(
-    Array.from(new Set(rows.map((r) => r.interval).filter((x): x is string => !!x))).sort(),
+    Array.from(new Set(rows.map((r) => r.interval).filter((x) => !!x))).sort(),
   );
 
   // ── status banner ───────────────────────────────────────────
@@ -308,7 +321,7 @@
                 <span class="meta-row">#{o.bexioOrderId}{#if o.customerId} · Kunden-ID {o.customerId}{/if}</span>
               </td>
               <td class="col-interval">
-                <span class="freq-tag">{INTERVAL_LABEL[o.interval ?? ''] ?? o.interval ?? '—'}</span>
+                <span class="freq-tag">{freqLabel(o.interval, o.intervalMultiplier)}</span>
               </td>
               <td class="col-next">
                 {#if o.nextBillingDate}

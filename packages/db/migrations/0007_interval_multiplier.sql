@@ -1,0 +1,1 @@
+ALTER TABLE "recurring_orders" ADD COLUMN "interval_multiplier" integer DEFAULT 1 NOT NULL;

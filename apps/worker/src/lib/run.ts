@@ -142,10 +142,13 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   // F-8: separate counters — `created` now means truly NEW invoices this run.
   // skipped_duplicate is a no-op (a row already existed for the period) and
   // should not be conflated with creation.
-  const created =
-    results.filter((r) => r.result.kind === 'sent').length +
-    subscriptionResults.filter((r) => r.kind === 'sent').length;
-  const sent = created;
+  // `created` = truly new invoices this run (sent OR created-as-draft when
+  // auto-send is off). `sent` = only those actually mailed. skipped_duplicate is
+  // a no-op and counts as neither.
+  const created = results.filter(
+    (r) => r.result.kind === 'sent' || r.result.kind === 'created_unsent',
+  ).length;
+  const sent = results.filter((r) => r.result.kind === 'sent').length;
 
   await db
     .update(botRuns)
@@ -171,6 +174,9 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
       customerName: r.customerName,
       kind: r.result.kind,
       ...(r.result.kind === 'sent'
+        ? { invoiceId: r.result.invoiceId, amount: r.result.amount, billingPeriod: r.result.billingPeriod }
+        : {}),
+      ...(r.result.kind === 'created_unsent'
         ? { invoiceId: r.result.invoiceId, amount: r.result.amount, billingPeriod: r.result.billingPeriod }
         : {}),
       ...(r.result.kind === 'skipped_duplicate'
