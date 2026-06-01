@@ -110,6 +110,9 @@ export type BexioOrder = {
   title: string;
   contact_id: number;
   contact_sub_id?: number | null;
+  /** Free-text address snapshot frozen onto the order at creation. Compared
+   *  against the live contact address to detect drift (order path inherits this). */
+  contact_address?: string | null;
   user_id?: number | null;
   project_id?: number | null;
   logopaper_id?: number | null;
@@ -187,6 +190,11 @@ export type BexioContact = {
   name_2?: string | null;
   salutation_id?: number | null;
   mail?: string | null;
+  /** Structured live address (used for address-drift detection vs the order's
+   *  frozen contact_address snapshot). */
+  address?: string | null;
+  postcode?: string | null;
+  city?: string | null;
   updated_at: string;
 };
 

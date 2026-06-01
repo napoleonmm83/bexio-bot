@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import * as schema from './schema.ts';
 
 export * from './schema.ts';
+export { getSetting, getSettings, setSetting } from './settings.ts';
 
 let _client: ReturnType<typeof postgres> | undefined;
 let _db: ReturnType<typeof drizzle<typeof schema>> | undefined;

@@ -43,6 +43,13 @@
       "when": 1778624608517,
       "tag": "0005_wonderful_jack_murdock",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780348377901,
+      "tag": "0006_app_settings",
+      "breakpoints": true
     }
   ]
 }

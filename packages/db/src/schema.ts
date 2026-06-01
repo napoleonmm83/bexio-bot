@@ -161,6 +161,21 @@ export const secrets = pgTable('secrets', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Generic user-editable application settings (key/value). Separate from `secrets`
+ * (which holds OAuth tokens) so cosmetics aren't mixed with credentials.
+ * The /settings web page writes these; the worker reads them via getSetting()
+ * with an env fallback during migration. NEVER store deploy-time secrets here
+ * (DATABASE_URL, BEXIO_CLIENT_SECRET, CF_ACCESS_*, COOLIFY_API_TOKEN, …).
+ * The one exception is `discord_webhook_url`, which is a low-sensitivity URL the
+ * worker reads at runtime; it is masked write-only in the UI.
+ */
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Subscription layer (bot-native, parallel to recurring_orders) ─────
 
 export const subscriptionIntervalEnum = pgEnum('subscription_interval', [

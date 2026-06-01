@@ -351,6 +351,10 @@
   <footer class="footer">
     <a href="/runs">Lauf-Historie</a>
     <span class="sep">·</span>
+    <a href="/orders/import">Import</a>
+    <span class="sep">·</span>
+    <a href="/settings">Einstellungen</a>
+    <span class="sep">·</span>
     <a href="/subscriptions">Abonnements</a>
     <span class="sep">·</span>
     <a href="/billing-runs">Abrechnungen</a>

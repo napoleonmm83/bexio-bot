@@ -40,6 +40,8 @@ export type DiscordRunReport = {
   enabledOrders: number;
   errors: Array<{ stage: string; message: string }>;
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
+  /** Orders whose frozen billing address diverges from the live contact. */
+  driftWarnings?: Array<{ bexioOrderId: number; customerName: string; detail: string }>;
   subscriptionResults: Array<{
     kind: 'sent' | 'skipped_duplicate' | 'failed';
     subscriptionId: number;
@@ -63,10 +65,11 @@ export type DiscordSendResult =
 export async function sendRunReport(
   webhookUrl: string,
   report: DiscordRunReport,
+  dashboardUrl: string = DASHBOARD_URL,
 ): Promise<DiscordSendResult> {
   const embeds: Embed[] = [buildRunEmbed(report)];
   if (report.newOrders.length > 0) {
-    embeds.push(buildNewOrdersEmbed(report.newOrders));
+    embeds.push(buildNewOrdersEmbed(report.newOrders, dashboardUrl));
   }
   return postWebhook(webhookUrl, { embeds });
 }
@@ -174,6 +177,17 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
       inline: false,
     });
   }
+  if (r.driftWarnings && r.driftWarnings.length > 0) {
+    fields.push({
+      name: '⚠ Adress-Drift',
+      value: r.driftWarnings
+        .slice(0, 8)
+        .map((d) => `· #${d.bexioOrderId} ${truncate(d.customerName, 32)}: ${d.detail}`)
+        .join('\n')
+        .slice(0, 1024),
+      inline: false,
+    });
+  }
   if (r.errors.length > 0) {
     fields.push({
       name: '⚠ Worker-Fehler',
@@ -192,14 +206,17 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
   };
 }
 
-function buildNewOrdersEmbed(newOrders: DiscordRunReport['newOrders']): Embed {
+function buildNewOrdersEmbed(
+  newOrders: DiscordRunReport['newOrders'],
+  dashboardUrl: string = DASHBOARD_URL,
+): Embed {
   const fields: Embed['fields'] = newOrders.slice(0, 24).map((o) => ({
     name: truncate(o.customerName, 64),
     value: `Auftrag #${o.bexioOrderId} · ${o.interval}`,
     inline: true,
   }));
 
-  const dashboardLink = `${DASHBOARD_URL}/?filter=pausiert`;
+  const dashboardLink = `${dashboardUrl}/?filter=pausiert`;
 
   return {
     title: `Neue Aufträge in bexio · ${newOrders.length}`,

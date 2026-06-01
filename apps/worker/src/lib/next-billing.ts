@@ -15,6 +15,12 @@ const WEEKDAY_INDEX: Record<string, number> = {
 
 const TZ = 'Europe/Zurich';
 
+// Safety cap on the day/interval walk. It bounds distance from START, so set it
+// high enough (~54y of daily/weekly steps) to cover any realistic start date
+// without ever running unbounded. The walk is plain integer arithmetic — even
+// the worst case (20k iterations) is microseconds.
+const MAX_STEPS = 20_000;
+
 type Parts = { y: number; m: number; d: number };
 
 function getZurichParts(input: Date | string): Parts {
@@ -59,15 +65,17 @@ function lastDayOfMonth(y: number, m: number): number {
   return new Date(y, m, 0).getDate();
 }
 
-function addInterval(parts: Parts, type: string, interval: number): Parts {
-  if (type === 'yearly') return { ...parts, y: parts.y + interval };
-  if (type === 'quarterly') return addMonths(parts, 3 * interval);
-  if (type === 'half_year') return addMonths(parts, 6 * interval);
-  if (type === 'monthly') return addMonths(parts, interval);
+function addInterval(parts: Parts, type: string, interval: number, anchorDay: number): Parts {
+  if (type === 'yearly') {
+    const y = parts.y + interval;
+    return { y, m: parts.m, d: Math.min(anchorDay, lastDayOfMonth(y, parts.m)) };
+  }
+  if (type === 'quarterly') return addMonths(parts, 3 * interval, anchorDay);
+  if (type === 'half_year') return addMonths(parts, 6 * interval, anchorDay);
+  if (type === 'monthly') return addMonths(parts, interval, anchorDay);
   if (type === 'daily') return addDays(parts, interval);
-  // weekly handled separately in computeNextBilling — needs weekdays array
-  // Unknown type — bump by one month as a safe default
-  return addMonths(parts, 1);
+  // weekly handled separately (needs weekdays). Unknown type → one month.
+  return addMonths(parts, 1, anchorDay);
 }
 
 function addDays(parts: Parts, days: number): Parts {
@@ -75,20 +83,25 @@ function addDays(parts: Parts, days: number): Parts {
   return { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1, d: d.getUTCDate() };
 }
 
-function addMonths(parts: Parts, months: number): Parts {
+// Add whole months and set the day from the ORIGINAL anchor (capped to the new
+// month), NOT from the carried day. Carrying a previously-capped day would clamp
+// a 31st anchor to the 28th forever after February; re-anchoring lets it re-climb
+// to 03-31, 04-30, etc.
+function addMonths(parts: Parts, months: number, anchorDay: number): Parts {
   let y = parts.y;
   let m = parts.m + months;
   while (m > 12) { y += 1; m -= 12; }
   while (m < 1) { y -= 1; m += 12; }
-  // Cap day to the new month's length (e.g. Jan 31 + 1 month = Feb 28/29)
-  const d = Math.min(parts.d, lastDayOfMonth(y, m));
-  return { y, m, d };
+  return { y, m, d: Math.min(anchorDay, lastDayOfMonth(y, m)) };
 }
 
 function applySchedule(parts: Parts, schedule: string | undefined): Parts {
   if (schedule === 'last_day') {
     return { ...parts, d: lastDayOfMonth(parts.y, parts.m) };
   }
+  // 'fixed_day' (and undefined): keep the anchor day-of-month. addInterval
+  // re-anchors to the original start day each step (capped to the month), so a
+  // 31st anchor gives 03-31 / 04-30 rather than clamping to the 28th.
   return parts;
 }
 
@@ -96,6 +109,19 @@ function isAfter(a: Parts, b: Parts): boolean {
   if (a.y !== b.y) return a.y > b.y;
   if (a.m !== b.m) return a.m > b.m;
   return a.d > b.d;
+}
+
+/** UTC-midnight ms of the Monday of the ISO week containing the given day. */
+function mondayMidnightUtc(p: Parts): number {
+  const utc = Date.UTC(p.y, p.m - 1, p.d);
+  const dow = new Date(utc).getUTCDay(); // 0=Sun..6=Sat
+  return utc - ((dow + 6) % 7) * 86_400_000;
+}
+
+/** Whole ISO weeks (Monday-aligned) between two calendar days. Used to honor a
+ *  weekly `interval` > 1 — e.g. interval=2 bills only every other week. */
+function weeksBetween(start: Parts, day: Parts): number {
+  return Math.round((mondayMidnightUtc(day) - mondayMidnightUtc(start)) / (7 * 86_400_000));
 }
 
 /**
@@ -124,12 +150,18 @@ export function computeNextBilling(
     );
     if (targetDays.size === 0) return null;
 
-    let cursor = getZurichParts(rep.start);
-    // Walk forward day-by-day up to 7 × interval days (safety: 365)
-    for (let i = 0; i < 365; i++) {
-      const utc = new Date(Date.UTC(cursor.y, cursor.m - 1, cursor.d));
-      const dow = utc.getUTCDay();
-      if (isAfter(cursor, today) && targetDays.has(dow)) {
+    const startParts = getZurichParts(rep.start);
+    let cursor = startParts;
+    // Walk forward day-by-day. Cap at 3650 days (10y) so an old start with a
+    // large interval still resolves. An occurrence counts only on a configured
+    // weekday AND in an active week (every `interval`-th week from the start).
+    for (let i = 0; i < MAX_STEPS; i++) {
+      const dow = new Date(Date.UTC(cursor.y, cursor.m - 1, cursor.d)).getUTCDay();
+      if (
+        isAfter(cursor, today) &&
+        targetDays.has(dow) &&
+        weeksBetween(startParts, cursor) % interval === 0
+      ) {
         return zurichDayToUtcDate(cursor);
       }
       cursor = addDays(cursor, 1);
@@ -138,10 +170,11 @@ export function computeNextBilling(
   }
 
   // daily / monthly / quarterly / half_year / yearly all use interval-stepping
+  const anchorDay = getZurichParts(rep.start).d;
   let candidate = applySchedule(getZurichParts(rep.start), schedule);
-  let safetyBudget = 3650; // 10 years of daily intervals — defensive cap
+  let safetyBudget = MAX_STEPS;
   while (!isAfter(candidate, today) && safetyBudget-- > 0) {
-    candidate = applySchedule(addInterval(candidate, type, interval), schedule);
+    candidate = applySchedule(addInterval(candidate, type, interval, anchorDay), schedule);
   }
   if (safetyBudget <= 0) return null;
 
@@ -193,24 +226,29 @@ export function computeCurrentOccurrence(
     );
     if (targetDays.size === 0) return null;
 
-    let cursor = getZurichParts(rep.start);
+    const startParts = getZurichParts(rep.start);
+    let cursor = startParts;
     let last: Parts | null = null;
-    for (let i = 0; i < 3650; i++) {
+    for (let i = 0; i < MAX_STEPS; i++) {
       if (isAfter(cursor, horizon)) break;
-      const utc = new Date(Date.UTC(cursor.y, cursor.m - 1, cursor.d));
-      if (targetDays.has(utc.getUTCDay())) last = cursor;
+      const dow = new Date(Date.UTC(cursor.y, cursor.m - 1, cursor.d)).getUTCDay();
+      // Active week only (honors interval > 1, e.g. bi-weekly).
+      if (targetDays.has(dow) && weeksBetween(startParts, cursor) % interval === 0) {
+        last = cursor;
+      }
       cursor = addDays(cursor, 1);
     }
     return last ? zurichDayToUtcDate(last) : null;
   }
 
   // daily / monthly / quarterly / half_year / yearly: interval-stepping.
+  const anchorDay = getZurichParts(rep.start).d;
   let candidate = applySchedule(getZurichParts(rep.start), schedule);
   let last: Parts | null = null;
-  let safetyBudget = 3650;
+  let safetyBudget = MAX_STEPS;
   while (!isAfter(candidate, horizon) && safetyBudget-- > 0) {
     last = candidate;
-    candidate = applySchedule(addInterval(candidate, type, interval), schedule);
+    candidate = applySchedule(addInterval(candidate, type, interval, anchorDay), schedule);
   }
   if (safetyBudget <= 0) return null;
 

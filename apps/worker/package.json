@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     "./run": "./src/lib/run.ts",
-    "./subscriptions": "./src/lib/subscriptions.ts"
+    "./subscriptions": "./src/lib/subscriptions.ts",
+    "./settings": "./src/lib/settings.ts",
+    "./sync": "./src/lib/sync.ts"
   },
   "scripts": {
     "start": "bun run src/cli.ts",

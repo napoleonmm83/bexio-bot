@@ -56,3 +56,64 @@ export async function getOrderRepetition(
 ): Promise<BexioOrderRepetition> {
   return callBexio<BexioOrderRepetition>(`/kb_order/${orderId}/repetition`, { accessToken });
 }
+
+/** One search criterion for POST /kb_order/search. */
+export type OrderSearchCriterion = {
+  field: string;
+  value: string | number | boolean;
+  /** Default 'like' if omitted. NOTE: is_recurring is NOT a searchable field
+   *  (bexio returns 400) — filter it client-side. updated_at IS searchable. */
+  criteria?:
+    | '=' | '!=' | '>' | '<' | '>=' | '<='
+    | 'like' | 'not_like' | 'is_null' | 'not_null'
+    | 'in' | 'not_in' | 'greater_than' | 'less_than';
+};
+
+/**
+ * Server-side order search. Body is an array of {field, value, criteria}.
+ * Searchable fields include id, kb_item_status_id, document_nr, title,
+ * contact_id, is_valid_from, updated_at. (is_recurring is NOT searchable.)
+ */
+export async function searchOrders(
+  accessToken: string,
+  criteria: OrderSearchCriterion[],
+  opts: { limit?: number; offset?: number } = {},
+): Promise<BexioOrder[]> {
+  return callBexio<BexioOrder[]>('/kb_order/search', {
+    accessToken,
+    method: 'POST',
+    query: { limit: opts.limit ?? 500, offset: opts.offset ?? 0 },
+    body: criteria,
+  });
+}
+
+/**
+ * Incremental recurring-order list: orders changed since `sinceIso`
+ * ('YYYY-MM-DD HH:mm:ss'). bexio can't filter is_recurring server-side, so we
+ * search by updated_at and filter is_recurring client-side. Pages to a 5000 cap.
+ */
+export async function listRecurringOrdersSince(
+  accessToken: string,
+  sinceIso: string,
+): Promise<BexioOrder[]> {
+  const all: BexioOrder[] = [];
+  let offset = 0;
+  const LIMIT = 500;
+
+  while (true) {
+    const page = await searchOrders(
+      accessToken,
+      [{ field: 'updated_at', value: sinceIso, criteria: 'greater_than' }],
+      { limit: LIMIT, offset },
+    );
+    all.push(...page.filter((o) => o.is_recurring));
+    if (page.length < LIMIT) break;
+    offset += LIMIT;
+    if (offset > 5000) {
+      console.warn('listRecurringOrdersSince: > 5000 changed orders, capping at 5000');
+      break;
+    }
+  }
+
+  return all;
+}

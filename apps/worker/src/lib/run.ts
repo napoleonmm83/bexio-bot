@@ -14,17 +14,16 @@ import { botRuns } from '@bexio-bot/db';
 import { getValidAccessToken } from '@bexio-bot/bexio-client';
 import { notifyAll, type ChannelResult } from '@bexio-bot/notify';
 import { syncRecurringOrders, getEnabledOrders, getProcessableOrderById } from './sync.ts';
+import { loadWorkerSettings } from './settings.ts';
 import {
   processOrder,
   reconcileInFlightSends,
   retryIssuedRows,
   type ProcessOrderResult,
 } from './state-machine.ts';
-import {
-  processSubscriptions,
-  reconcileInFlightBillingRuns,
-  type ProcessSubscriptionResult,
-} from './subscriptions.ts';
+// Subscription pipeline retired 2026-06-01 (see step 5b). Type kept for the
+// (now always empty) RunSummary field so downstream consumers are unchanged.
+import { type ProcessSubscriptionResult } from './subscriptions.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -87,13 +86,16 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     runId = runRow!.id;
   }
 
-  // ── 2. Token + Sync ─────────────────────────────────────────
+  // ── 2. Token + runtime settings + Sync ──────────────────────
+  // Settings resolve DB (app_settings) → env → default. Loaded once and
+  // threaded into the pipeline so a /settings change applies next run.
   const accessToken = await getValidAccessToken(db);
+  const settings = await loadWorkerSettings(db);
   const sync = await syncRecurringOrders(db, accessToken, { dryRun: options.dryRun });
 
   // ── 3 + 4. Crash recovery ───────────────────────────────────
   const reconcile = await reconcileInFlightSends(db, accessToken);
-  const retriedFromIssued = await retryIssuedRows(db, accessToken);
+  const retriedFromIssued = await retryIssuedRows(db, accessToken, settings);
 
   // ── 5. Process enabled orders ───────────────────────────────
   const enabled = options.onlyOrderId == null
@@ -116,7 +118,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
         bexioOrderId: o.bexioOrderId,
         customerName: o.customerName,
         customerEmail: o.customerEmail,
-      });
+      }, settings);
       results.push({ orderId: o.bexioOrderId, customerName: o.customerName, result });
     } catch (err) {
       errors.push({
@@ -126,38 +128,14 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     }
   }
 
-  // ── 5b. Subscription-layer pipeline ──────────────────────────────────
-  let subscriptionResults: ProcessSubscriptionResult[] = [];
-  if (!options.dryRun) {
-    // Crash-recovery for billing_runs stuck in 'pending' from a previous run
-    // that died mid-flight. (F-12)
-    try {
-      const recon = await reconcileInFlightBillingRuns(db, accessToken);
-      if (recon.reconciled > 0 || recon.deleted > 0) {
-        console.log(`reconcileInFlightBillingRuns: reconciled=${recon.reconciled} deleted=${recon.deleted}`);
-      }
-    } catch (err) {
-      errors.push({
-        stage: 'reconcileInFlightBillingRuns',
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    try {
-      // Use the current instant (not UTC-midnight-today). Subscriptions store
-      // next_billing_date as a date (midnight in whatever TZ they were inserted),
-      // so any past-day's stored date will compare as <= now(). Avoids the
-      // UTC vs Europe/Zurich mismatch that missed subscriptions due between
-      // 22:00 UTC and 24:00 UTC at month boundaries. (F-4)
-      const today = new Date();
-      subscriptionResults = await processSubscriptions(db, accessToken, today);
-    } catch (err) {
-      errors.push({
-        stage: 'processSubscriptions',
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  // ── 5b. Subscription-layer pipeline — DEPRECATED (2026-06-01) ─────────
+  // The bot-native subscription pipeline is retired: it was never used in
+  // production (0 rows, confirmed by live probe) and the order pipeline already
+  // covers every billing cycle correctly. New recurring billing goes through
+  // bexio orders (see /orders/import). The subscriptions/billing_runs tables
+  // remain (empty) for history, and no new subscriptions can be created — the
+  // worker no longer bills or reconciles them.
+  const subscriptionResults: ProcessSubscriptionResult[] = [];
 
   // ── 6. Close bot_runs row ───────────────────────────────────
   const finishedAt = new Date();
@@ -187,6 +165,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     finishedAt,
     enabledOrders: enabled.length,
     newOrders: sync.newOrders,
+    driftWarnings: sync.driftWarnings,
     errors,
     results: results.map((r) => ({
       customerName: r.customerName,
@@ -208,6 +187,10 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
       ...(r.kind === 'failed' ? { reason: r.reason, scheduledFor: r.scheduledFor } : {}),
       ...(r.kind === 'skipped_duplicate' ? { scheduledFor: r.scheduledFor } : {}),
     })),
+  }, {
+    enabled: settings.notificationsEnabled,
+    discordWebhookUrl: settings.discordWebhookUrl,
+    dashboardUrl: settings.dashboardUrl,
   });
 
   return {

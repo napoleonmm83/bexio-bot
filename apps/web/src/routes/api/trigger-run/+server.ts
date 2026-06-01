@@ -16,14 +16,21 @@
 
 import { eq, sql } from 'drizzle-orm';
 import type { RequestHandler } from './$types.ts';
-import { getDb, botRuns } from '@bexio-bot/db';
+import { getDb, getSetting, botRuns } from '@bexio-bot/db';
 import { runDaily } from '@bexio-bot/worker/run';
 import { verifyCfAccess, CfAccessError } from '$lib/server/cf-access.ts';
 
 // A real production run can exceed 30 min when many orders × bexio's 1.1s
-// rate-limit pacing. Two hours is a defensive upper bound; override via
-// WORKER_RUN_STALE_MS env var if the order count grows beyond that. (F-5)
-const STALE_MS = Number(process.env.WORKER_RUN_STALE_MS ?? 2 * 60 * 60 * 1000);
+// rate-limit pacing. Two hours is a defensive upper bound. Configurable via the
+// run_stale_minutes /settings value (DB), falling back to WORKER_RUN_STALE_MS
+// env, then 2h. (F-5)
+const DEFAULT_STALE_MS = Number(process.env.WORKER_RUN_STALE_MS ?? 2 * 60 * 60 * 1000);
+
+type Db = ReturnType<typeof getDb>;
+async function resolveStaleMs(db: Db): Promise<number> {
+  const min = Number(await getSetting(db, 'run_stale_minutes'));
+  return Number.isFinite(min) && min >= 1 ? min * 60_000 : DEFAULT_STALE_MS;
+}
 
 export const POST: RequestHandler = async ({ request }) => {
   try {
@@ -36,6 +43,7 @@ export const POST: RequestHandler = async ({ request }) => {
       : undefined;
 
     const db = getDb();
+    const STALE_MS = await resolveStaleMs(db);
 
     // Look for any recent run that's still in-flight.
     const inFlight = await db

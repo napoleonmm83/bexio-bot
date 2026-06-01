@@ -27,6 +27,7 @@ import {
   issueInvoice,
   sendInvoice,
   getInvoice,
+  findInvoiceByApiReference,
   getOrderRepetition,
   isSupportedBexioInterval,
   BexioApiError,
@@ -42,13 +43,12 @@ type Db = PostgresJsDatabase<any>;
 const MAX_ATTEMPTS = 3;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 
-// Catch-up tolerance for the due-gate: an order is billed on its scheduled
-// occurrence day and for this many days after (covers a skipped daily run).
-// Never back-bills older periods. Override via env for tuning.
-const DUE_WINDOW_DAYS = (() => {
-  const raw = Number(process.env.ORDER_DUE_WINDOW_DAYS ?? '3');
-  return Number.isFinite(raw) && raw >= 0 ? raw : 3;
-})();
+// Per-run config, resolved from app_settings (DB → env → default) in
+// loadWorkerSettings() and threaded in. dueWindowDays = catch-up tolerance for
+// the due-gate: an order is billed on its scheduled occurrence day and for this
+// many days after (covers a skipped daily run); never back-bills older periods.
+export type MailConfig = { mailSubject: string; mailMessage: string };
+export type ProcessOrderConfig = MailConfig & { dueWindowDays: number };
 
 export type ProcessOrderResult =
   | { kind: 'sent'; invoiceId: number; amount: string; billingPeriod: string }
@@ -64,35 +64,27 @@ export type OrderInput = {
   customerEmail: string | null;
 };
 
-const MAIL_SUBJECT_TEMPLATE = 'Rechnung {document_nr}';
-const MAIL_MESSAGE_TEMPLATE = [
-  'Sehr geehrte Damen und Herren',
-  '',
-  'Im Anhang finden Sie unsere Rechnung {document_nr}.',
-  'Die Rechnung können Sie auch online einsehen: [Network Link]',
-  '',
-  'Bei Fragen stehen wir Ihnen gerne zur Verfügung.',
-  '',
-  'Freundliche Grüsse',
-].join('\n');
-
 function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
 }
 
-function todayIsoInZurich(): string {
+function isoDateInZurich(d: Date): string {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Zurich',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   });
-  const parts = fmt.formatToParts(new Date());
+  const parts = fmt.formatToParts(d);
   const year = parts.find((p) => p.type === 'year')?.value;
   const month = parts.find((p) => p.type === 'month')?.value;
   const day = parts.find((p) => p.type === 'day')?.value;
-  if (!year || !month || !day) throw new Error('Could not format current Zurich date');
+  if (!year || !month || !day) throw new Error('Could not format Zurich date');
   return `${year}-${month}-${day}`;
+}
+
+function todayIsoInZurich(): string {
+  return isoDateInZurich(new Date());
 }
 
 function isFullyInvoicedOrderError(err: BexioApiError): boolean {
@@ -142,6 +134,7 @@ export async function processOrder(
   db: Db,
   accessToken: string,
   order: OrderInput,
+  config: ProcessOrderConfig,
 ): Promise<ProcessOrderResult> {
   const invoiceDate = todayIsoInZurich();
 
@@ -187,12 +180,12 @@ export async function processOrder(
   // the first run after activation, and orders onboarded with an old start date
   // would have their last past period billed immediately. (daily only "worked"
   // by coincidence — it's due every day.)
-  const dueOccurrence = isOrderDue(repetition, new Date(), DUE_WINDOW_DAYS);
+  const dueOccurrence = isOrderDue(repetition, new Date(), config.dueWindowDays);
   if (!dueOccurrence) {
-    console.log(`[order=${order.bexioOrderId}] not due today (window=${DUE_WINDOW_DAYS}d) — next scheduled occurrence is in the future`);
+    console.log(`[order=${order.bexioOrderId}] not due today (window=${config.dueWindowDays}d) — next scheduled occurrence is in the future`);
     return {
       kind: 'not_due',
-      reason: `not due today — next scheduled occurrence is in the future (catch-up window ${DUE_WINDOW_DAYS}d)`,
+      reason: `not due today — next scheduled occurrence is in the future (catch-up window ${config.dueWindowDays}d)`,
     };
   }
 
@@ -200,6 +193,11 @@ export async function processOrder(
   // the (order_id, billing_period) dedup tracks the real schedule: one invoice
   // per occurrence, robust to a run that fires a few days into the period.
   const occurrenceIso = dueOccurrence.toISOString();
+  // Anchor the snapshot invoice's is_valid_from to the OCCURRENCE day (not the
+  // run day). Otherwise a daily/weekly order billed 1–3 days late inside the
+  // catch-up window would get is_valid_from=today, and the post-create period
+  // reconciliation (below) would migrate its key off the schedule.
+  const occurrenceDate = isoDateInZurich(dueOccurrence);
   let billingPeriod = formatBillingPeriod(occurrenceIso, repetitionType);
   // Stable prefix on every log line — pipe Coolify logs through `grep "[order=N"`
   // to follow one order's full pipeline. Keep prefix short; the orchestrator's
@@ -247,6 +245,10 @@ export async function processOrder(
 
   // Step 1: ask bexio to create the next invoice
   let invoice: BexioInvoice | undefined;
+  // True when the snapshot guard reused an EXISTING (not-yet-sent) bexio invoice
+  // instead of creating one. Such an invoice may already be festgeschrieben, so
+  // the issue step below tolerates an "already issued" error.
+  let reusedUnsent = false;
   try {
     invoice = await createInvoiceFromOrder(accessToken, { order_id: order.bexioOrderId });
     console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → invoice ${invoice.id}`);
@@ -262,13 +264,45 @@ export async function processOrder(
           };
         }
         console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → 422 fully-invoiced on daily/weekly; trying snapshot fallback`);
+        const apiRef = `bexio-bot:order:${order.bexioOrderId}:period:${billingPeriod}`;
         try {
-          invoice = await createInvoiceFromOrderSnapshot(accessToken, {
-            orderId: order.bexioOrderId,
-            isValidFrom: invoiceDate,
-            apiReference: `bexio-bot:order:${order.bexioOrderId}:period:${billingPeriod}`,
-          });
-          console.log(`${ctx} snapshot fallback → invoice ${invoice.id}`);
+          // API-side idempotency guard: a prior run may have created this invoice
+          // in bexio but had its local DB claim rolled back. Reuse it instead of
+          // creating a duplicate. (Snapshot path only — the order path sets no
+          // api_reference, and bexio's own 422 guards it.)
+          const existing = await findInvoiceByApiReference(accessToken, apiRef);
+          if (existing && (existing.is_sent || existing.mail_sent_at)) {
+            // The prior run already created AND sent this invoice. Reconcile the
+            // local claim to 'sent' and do NOT re-issue/re-send — re-sending would
+            // email the customer a duplicate (mirrors reconcileInFlightSends).
+            await db
+              .update(invoiceRuns)
+              .set({
+                invoiceId: existing.id,
+                status: 'sent',
+                sentAt: existing.mail_sent_at ? new Date(existing.mail_sent_at) : new Date(),
+                lockAcquiredAt: null,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
+            console.log(`${ctx} snapshot: existing invoice ${existing.id} already sent — reconciled local row, no re-send`);
+            return { kind: 'sent', invoiceId: existing.id, amount: existing.total, billingPeriod };
+          }
+          if (existing) {
+            // Found but not yet sent — reuse it (don't double-create) and continue.
+            // The issue step tolerates an "already issued" error so it is issued
+            // and sent exactly once.
+            invoice = existing;
+            reusedUnsent = true;
+            console.log(`${ctx} snapshot: reusing existing un-sent invoice ${existing.id} (idempotency guard)`);
+          } else {
+            invoice = await createInvoiceFromOrderSnapshot(accessToken, {
+              orderId: order.bexioOrderId,
+              isValidFrom: occurrenceDate,
+              apiReference: apiRef,
+            });
+            console.log(`${ctx} snapshot fallback → invoice ${invoice.id}`);
+          }
         } catch (fallbackErr) {
           if (fallbackErr instanceof BexioApiError) {
             console.error(`${ctx} snapshot fallback FAILED status=${fallbackErr.status} class=${fallbackErr.errorClass} body=${fallbackErr.body}`);
@@ -352,7 +386,17 @@ export async function processOrder(
   let wasIssued = false;
   try {
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issuing');
-    await issueInvoice(accessToken, invoice.id);
+    try {
+      await issueInvoice(accessToken, invoice.id);
+    } catch (issueErr) {
+      if (reusedUnsent && issueErr instanceof BexioApiError) {
+        // Reused an existing invoice that is likely already festgeschrieben.
+        // Treat the issue error as "already issued" and proceed to send once.
+        console.warn(`${ctx} issue on reused invoice ${invoice.id} errored (${issueErr.status}) — assuming already issued, proceeding to send`);
+      } else {
+        throw issueErr;
+      }
+    }
     console.log(`${ctx} issued invoice ${invoice.id} (${invoice.document_nr})`);
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'issued', { issuedAt: new Date() });
     wasIssued = true;
@@ -370,8 +414,8 @@ export async function processOrder(
     });
     await sendInvoice(accessToken, invoice.id, {
       recipientEmail: order.customerEmail,
-      subject: renderTemplate(MAIL_SUBJECT_TEMPLATE, { document_nr: docNr }),
-      message: renderTemplate(MAIL_MESSAGE_TEMPLATE, { document_nr: docNr }),
+      subject: renderTemplate(config.mailSubject, { document_nr: docNr }),
+      message: renderTemplate(config.mailMessage, { document_nr: docNr }),
       attachPdf: true,
     });
     console.log(`${ctx} sent invoice ${invoice.id} to ${order.customerEmail}`);
@@ -549,7 +593,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
  * Atomically claims ALL eligible rows in one UPDATE-RETURNING transition to
  * 'sending' + attempts++; concurrent workers won't see the same rows. (N-4)
  */
-export async function retryIssuedRows(db: Db, accessToken: string): Promise<number> {
+export async function retryIssuedRows(db: Db, accessToken: string, config: MailConfig): Promise<number> {
   const claimed = await db
     .update(invoiceRuns)
     .set({
@@ -584,8 +628,8 @@ export async function retryIssuedRows(db: Db, accessToken: string): Promise<numb
       const docNr = live.document_nr;
       await sendInvoice(accessToken, row.invoiceId, {
         recipientEmail: order.customerEmail,
-        subject: renderTemplate(MAIL_SUBJECT_TEMPLATE, { document_nr: docNr }),
-        message: renderTemplate(MAIL_MESSAGE_TEMPLATE, { document_nr: docNr }),
+        subject: renderTemplate(config.mailSubject, { document_nr: docNr }),
+        message: renderTemplate(config.mailMessage, { document_nr: docNr }),
         attachPdf: true,
       });
       await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {

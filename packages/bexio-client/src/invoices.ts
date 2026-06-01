@@ -215,6 +215,27 @@ export async function getInvoice(accessToken: string, invoiceId: number): Promis
 }
 
 /**
+ * Find an invoice by its exact api_reference via POST /kb_invoice/search.
+ * Used as a second, API-side idempotency guard on the snapshot path: if a prior
+ * run created the invoice in bexio but had its local DB claim rolled back, this
+ * surfaces it so we reuse it instead of creating a duplicate. Returns null if
+ * none matches. Verified searchable live (2026-06-01). bexio's default criteria
+ * is 'like', so we filter for an exact match client-side as well.
+ */
+export async function findInvoiceByApiReference(
+  accessToken: string,
+  apiReference: string,
+): Promise<BexioInvoice | null> {
+  const results = await callBexio<BexioInvoice[]>('/kb_invoice/search', {
+    accessToken,
+    method: 'POST',
+    query: { limit: 10 },
+    body: [{ field: 'api_reference', value: apiReference, criteria: '=' }],
+  });
+  return results.find((inv) => inv.api_reference === apiReference) ?? null;
+}
+
+/**
  * Create an invoice from scratch (NOT from an order).
  * Endpoint: POST /kb_invoice.
  *

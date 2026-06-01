@@ -3,7 +3,14 @@
 
 export { BEXIO_API_BASE, BEXIO_AUTH_BASE } from './http.ts';
 export { getValidAccessToken } from './auth.ts';
-export { listRecurringOrders, getOrder, getOrderRepetition } from './orders.ts';
+export {
+  listRecurringOrders,
+  getOrder,
+  getOrderRepetition,
+  searchOrders,
+  listRecurringOrdersSince,
+  type OrderSearchCriterion,
+} from './orders.ts';
 export { getContact, listContacts } from './contacts.ts';
 export { listArticles, getArticle } from './articles.ts';
 export {
@@ -13,6 +20,7 @@ export {
   issueInvoice,
   sendInvoice,
   getInvoice,
+  findInvoiceByApiReference,
 } from './invoices.ts';
 export type { SendInvoiceInput } from './invoices.ts';
 export {

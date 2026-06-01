@@ -175,3 +175,70 @@ describe('computeNextBilling — unchanged: always a strictly-future occurrence'
     expect(ymd(computeNextBilling(rep('2026-01-15', 'monthly'), at('2026-05-20')))).toBe('2026-06-15');
   });
 });
+
+describe('weekly interval > 1 (bi-weekly): only active weeks bill', () => {
+  // 2026-05-04 is a Monday. interval=2 → active Mondays 05-04, 05-18, 06-01;
+  // off Mondays 05-11, 05-25.
+  const biweekly = () => rep('2026-05-04', 'weekly', 2, { weekdays: ['monday'] });
+
+  test('current occurrence on an active-week Monday → that Monday', () => {
+    expect(ymd(computeCurrentOccurrence(biweekly(), at('2026-05-18')))).toBe('2026-05-18');
+  });
+
+  test('current occurrence on an OFF-week Monday → previous active Monday', () => {
+    expect(ymd(computeCurrentOccurrence(biweekly(), at('2026-05-11')))).toBe('2026-05-04');
+  });
+
+  test('current occurrence mid off-week → last active Monday', () => {
+    expect(ymd(computeCurrentOccurrence(biweekly(), at('2026-05-27')))).toBe('2026-05-18');
+  });
+
+  test('next billing skips the off week', () => {
+    expect(ymd(computeNextBilling(biweekly(), at('2026-05-05')))).toBe('2026-05-18');
+  });
+
+  test('interval=1 weekly still bills every matching weekday (regression)', () => {
+    expect(ymd(computeCurrentOccurrence(rep('2026-05-04', 'weekly', 1, { weekdays: ['monday'] }), at('2026-05-11')))).toBe('2026-05-11');
+  });
+});
+
+describe("schedule 'fixed_day' (same day-of-month) is honored", () => {
+  test('monthly fixed_day keeps the start day-of-month', () => {
+    expect(ymd(computeCurrentOccurrence(rep('2026-01-15', 'monthly', 1, { schedule: 'fixed_day' }), at('2026-05-20')))).toBe('2026-05-15');
+  });
+
+  test('next billing for monthly fixed_day', () => {
+    expect(ymd(computeNextBilling(rep('2026-01-15', 'monthly', 1, { schedule: 'fixed_day' }), at('2026-05-20')))).toBe('2026-06-15');
+  });
+});
+
+describe('month-end anchor must re-climb after February (not clamp forever to the 28th)', () => {
+  // start 2026-01-31 → 01-31, 02-28, 03-31, 04-30, 05-31, 06-30 …
+  test('31st-anchored monthly lands on 03-31 (not 03-28)', () => {
+    expect(ymd(computeCurrentOccurrence(rep('2026-01-31', 'monthly'), at('2026-03-31')))).toBe('2026-03-31');
+  });
+
+  test('31st-anchored monthly lands on 04-30', () => {
+    expect(ymd(computeCurrentOccurrence(rep('2026-01-31', 'monthly'), at('2026-04-30')))).toBe('2026-04-30');
+  });
+
+  test('next billing for 31st-anchored monthly gives month-end, not the 28th', () => {
+    expect(ymd(computeNextBilling(rep('2026-01-31', 'monthly'), at('2026-03-15')))).toBe('2026-03-31');
+  });
+
+  test('yearly Feb-29 anchor caps to Feb-28 in a non-leap year', () => {
+    // start 2024-02-29 (leap) → 2025-02-28, 2026-02-28
+    expect(ymd(computeCurrentOccurrence(rep('2024-02-29', 'yearly'), at('2026-03-10')))).toBe('2026-02-28');
+  });
+});
+
+describe('weekly with a very old start still resolves to the current week', () => {
+  // 2014-01-06 is a Monday, ~12.4 years before 2026-06-02 (> the 3650-day cap).
+  test('current occurrence is the most recent Monday, not a stale one', () => {
+    expect(ymd(computeCurrentOccurrence(rep('2014-01-06', 'weekly', 1, { weekdays: ['monday'] }), at('2026-06-02')))).toBe('2026-06-01');
+  });
+
+  test('next billing is the upcoming Monday', () => {
+    expect(ymd(computeNextBilling(rep('2014-01-06', 'weekly', 1, { weekdays: ['monday'] }), at('2026-06-02')))).toBe('2026-06-08');
+  });
+});
