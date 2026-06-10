@@ -1,4 +1,5 @@
 import { expect, test, describe } from 'bun:test';
+import { BexioApiError } from '@bexio-bot/bexio-client';
 import {
   shouldSnapshotFallback,
   interpretClaimResult,
@@ -6,6 +7,8 @@ import {
   retryIssuedRows,
   classifyStuckSendingRow,
   shouldResendIssuedRow,
+  shouldRefuseZeroAmountInvoice,
+  shouldFailOnReadbackError,
 } from './state-machine.ts';
 
 describe('shouldSnapshotFallback — only daily/weekly trigger snapshot path', () => {
@@ -113,5 +116,33 @@ describe('shouldResendIssuedRow — honor bexio sent flags before re-mailing (BU
   test('neither flag set → resend', () => {
     expect(shouldResendIssuedRow({ is_sent: false, mail_sent_at: null })).toBe(true);
     expect(shouldResendIssuedRow({})).toBe(true);
+  });
+});
+
+describe('shouldRefuseZeroAmountInvoice — never issue a CHF 0 / non-positive invoice (EDGE-3)', () => {
+  test('zero, negative, and non-numeric totals are refused (fail-closed)', () => {
+    for (const t of ['0', '0.00', '-5', '-0.01', 0, null, undefined, '', '  ', 'abc', NaN]) {
+      expect(shouldRefuseZeroAmountInvoice(t)).toBe(true);
+    }
+  });
+
+  test('positive totals are allowed', () => {
+    for (const t of ['0.01', '10.00', '1500.50', 42]) {
+      expect(shouldRefuseZeroAmountInvoice(t)).toBe(false);
+    }
+  });
+});
+
+describe('shouldFailOnReadbackError — only a 404 is a permanent reconcile failure (EDGE-4)', () => {
+  test('bexio 404 (invoice gone) → permanent fail', () => {
+    expect(shouldFailOnReadbackError(new BexioApiError(404, 'permanent', 'not found'))).toBe(true);
+  });
+
+  test('transient / auth / rate-limit / network → do NOT terminally fail (retry next run)', () => {
+    expect(shouldFailOnReadbackError(new BexioApiError(500, 'transient', 'x'))).toBe(false);
+    expect(shouldFailOnReadbackError(new BexioApiError(429, 'rate_limit', 'x'))).toBe(false);
+    expect(shouldFailOnReadbackError(new BexioApiError(401, 'auth', 'x'))).toBe(false);
+    expect(shouldFailOnReadbackError(new TypeError('network'))).toBe(false);
+    expect(shouldFailOnReadbackError(new Error('weird'))).toBe(false);
   });
 });

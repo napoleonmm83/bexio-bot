@@ -67,6 +67,46 @@ export type RunDailyOptions = {
   existingRunId?: number;
 };
 
+// pg advisory-lock key that serializes the cron/CLI in-flight check-and-insert.
+// Distinct from the token-refresh lock (4242001). (EDGE-5)
+const RUN_LOCK_KEY = 4242002;
+// A run older than this with no finished_at is treated as dead (matches the HTTP
+// trigger endpoint's default). (EDGE-5)
+const RUN_STALE_MS = Number(process.env.WORKER_RUN_STALE_MS ?? 2 * 60 * 60 * 1000);
+
+/**
+ * True if a previous run is still in flight (unfinished and younger than the
+ * stale cutoff). Pure → unit-tested. (EDGE-5)
+ */
+export function isAnotherRunInFlight(inFlightStartedAt: Date | null, now: number, staleMs: number): boolean {
+  if (inFlightStartedAt == null) return false;
+  return now - inFlightStartedAt.getTime() < staleMs;
+}
+
+function buildSkippedSummary(runId: number, startedAt: Date, finishedAt: Date): RunSummary {
+  return {
+    runId,
+    startedAt,
+    finishedAt,
+    syncTotal: 0,
+    syncNewlyAdded: 0,
+    removedOrders: 0,
+    newOrders: [],
+    reconciledSent: 0,
+    reconciledAssumedSent: 0,
+    reconciledIssued: 0,
+    reconciledFailed: 0,
+    retriedFromIssued: 0,
+    enabledOrders: 0,
+    results: [],
+    subscriptionResults: [],
+    createdInvoicesCount: 0,
+    sentInvoicesCount: 0,
+    errors: [{ stage: 'runDaily', message: 'skipped — another run already in progress (EDGE-5)' }],
+    notifyResults: [],
+  };
+}
+
 export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSummary> {
   const startedAt = new Date();
   const errors: RunSummary['errors'] = [];
@@ -75,17 +115,51 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   // ── 1. Open bot_runs row (or reuse) ────────────────────────────────
   let runId: number;
   if (options.existingRunId != null) {
+    // HTTP trigger path already did its own in-flight check and inserted the row.
     runId = options.existingRunId;
   } else {
-    const [runRow] = await db
-      .insert(botRuns)
-      .values({
-        startedAt,
-        triggerSource,
-        notes: options.dryRun ? 'dry-run' : null,
-      })
-      .returning({ id: botRuns.id });
-    runId = runRow!.id;
+    // Cron/CLI path: serialize the in-flight check + insert under a pg advisory
+    // lock so two runs (the daily cron racing a Cowork trigger, or two crons)
+    // can't both proceed. The lock is held only for this short transaction; the
+    // inserted bot_runs row (finished_at IS NULL) is the in-flight marker
+    // thereafter. Per-order claim rows already prevent double-billing; this
+    // prevents wasted parallel API load + interleaving. (EDGE-5)
+    const claim = await db.transaction(async (tx) => {
+      const lockRes = await tx.execute(sql`SELECT pg_try_advisory_xact_lock(${RUN_LOCK_KEY}) AS locked`);
+      const locked = (lockRes[0] as { locked?: boolean } | undefined)?.locked === true;
+      const inFlight = await tx
+        .select({ startedAt: botRuns.startedAt })
+        .from(botRuns)
+        .where(sql`${botRuns.finishedAt} IS NULL`)
+        .orderBy(sql`${botRuns.startedAt} DESC`)
+        .limit(1);
+      const blocked = !locked || isAnotherRunInFlight(inFlight[0]?.startedAt ?? null, Date.now(), RUN_STALE_MS);
+      if (blocked) {
+        // Record a finished 'skipped' row for the audit trail (does not affect
+        // in-flight detection — it has finished_at set).
+        const [row] = await tx
+          .insert(botRuns)
+          .values({
+            startedAt,
+            finishedAt: new Date(),
+            triggerSource,
+            notes: 'skipped — another run already in progress (EDGE-5)',
+          })
+          .returning({ id: botRuns.id });
+        return { skipped: true as const, runId: row!.id };
+      }
+      const [row] = await tx
+        .insert(botRuns)
+        .values({ startedAt, triggerSource, notes: options.dryRun ? 'dry-run' : null })
+        .returning({ id: botRuns.id });
+      return { skipped: false as const, runId: row!.id };
+    });
+
+    if (claim.skipped) {
+      console.warn('runDaily: another run already in progress — skipping this trigger (EDGE-5)');
+      return buildSkippedSummary(claim.runId, startedAt, new Date());
+    }
+    runId = claim.runId;
   }
 
   // ── 2. Token + runtime settings + Sync ──────────────────────

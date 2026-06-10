@@ -383,6 +383,21 @@ export async function processOrder(
       .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
   }
 
+  // EDGE-3: refuse a zero/non-positive invoice before any issue/send side effect.
+  // bexio already returned the total. Keep the claim row as 'failed' (markFailed,
+  // not deleteClaim) so we don't re-create a fresh zero draft every run; Marcus
+  // fixes the article price in bexio and can re-trigger. The zero draft stays in
+  // bexio un-issued/un-sent for manual cleanup.
+  if (shouldRefuseZeroAmountInvoice(invoice.total)) {
+    console.error(`${ctx} refusing CHF 0 invoice ${invoice.id} (total=${invoice.total}) — set article prices in bexio`);
+    await markFailed(db, order.bexioOrderId, billingPeriod, new Error(`zero-amount invoice (total=${invoice.total}); set article prices in bexio`));
+    return {
+      kind: 'failed',
+      reason: `refusing to issue CHF 0 invoice (total=${invoice.total}) — set the article price in bexio, then re-trigger`,
+      invoiceId: invoice.id,
+    };
+  }
+
   // Auto-send off: leave the invoice as a created DRAFT (not issued, not sent)
   // for manual handling in bexio. 'created' is a stable resting state — neither
   // retryIssuedRows ('issued') nor reconcileInFlightSends ('sending') touches it,
@@ -561,6 +576,27 @@ export function shouldResendIssuedRow(live: { is_sent?: boolean; mail_sent_at?: 
 }
 
 /**
+ * Refuse to issue/send a zero-amount (or non-positive / unparseable) invoice
+ * (EDGE-3). The order/snapshot path has no per-position price guard, so a missing
+ * article price yields a CHF 0 invoice that bexio accepts and would mail. bexio
+ * returns the total after creation — gate on it before any festschreiben/send.
+ * Fail-closed: anything not strictly > 0 (incl. null/NaN) is refused.
+ */
+export function shouldRefuseZeroAmountInvoice(total: unknown): boolean {
+  return !(Number(total) > 0);
+}
+
+/**
+ * During crash recovery, a bexio read-back (getInvoice) may fail. Only a
+ * definitive 404 (the invoice is truly gone) is a permanent failure; transient
+ * 5xx / rate-limit / auth / network errors must NOT terminally mark a possibly-
+ * sent invoice 'failed' — leave it 'sending' for the next run to reconcile. (EDGE-4)
+ */
+export function shouldFailOnReadbackError(err: unknown): boolean {
+  return err instanceof BexioApiError && err.status === 404;
+}
+
+/**
  * Crash recovery: find rows in mid-flight whose lock has gone stale.
  * For each, ask bexio if the invoice was actually sent. Resolve accordingly.
  *
@@ -642,8 +678,18 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
         reconciledIssued += 1;
       }
     } catch (err) {
-      await markFailed(db, row.orderId, row.billingPeriod, err);
-      reconciledFailed += 1;
+      if (shouldFailOnReadbackError(err)) {
+        // Definitive 404 — the invoice is gone in bexio. Terminal.
+        await markFailed(db, row.orderId, row.billingPeriod, err);
+        reconciledFailed += 1;
+      } else {
+        // Transient read-back failure (5xx / rate-limit / auth / network). Do
+        // NOT terminally fail a possibly-sent invoice — leave it 'sending' with
+        // its stale lock so the next run reconciles it again. (EDGE-4)
+        console.warn(
+          `[reconcile order=${row.orderId} period=${row.billingPeriod}] transient read-back failure — leaving 'sending' for next run: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 
