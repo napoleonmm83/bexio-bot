@@ -520,11 +520,18 @@ async function markFailed(db: Db, orderId: number, billingPeriod: string, err: u
  *
  * Run this BEFORE processing new orders in each cron run.
  */
-export async function reconcileInFlightSends(db: Db, accessToken: string): Promise<{
+export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun = false): Promise<{
   reconciledSent: number;
   reconciledIssued: number;
   reconciledFailed: number;
 }> {
+  // Crash recovery resolves stuck rows by issuing/sending real invoices and
+  // writing terminal states — pure side-effects. A dry-run must skip it
+  // entirely so a "safe preview" can never mail a customer or mutate a row.
+  if (dryRun) {
+    return { reconciledSent: 0, reconciledIssued: 0, reconciledFailed: 0 };
+  }
+
   const cutoff = new Date(Date.now() - LOCK_STALE_MS);
 
   const stuck = await db
@@ -603,7 +610,13 @@ export async function reconcileInFlightSends(db: Db, accessToken: string): Promi
  * Atomically claims ALL eligible rows in one UPDATE-RETURNING transition to
  * 'sending' + attempts++; concurrent workers won't see the same rows. (N-4)
  */
-export async function retryIssuedRows(db: Db, accessToken: string, config: MailConfig): Promise<number> {
+export async function retryIssuedRows(db: Db, accessToken: string, config: MailConfig, dryRun = false): Promise<number> {
+  // Re-sends real invoice mails for rows parked in 'issued'. A dry-run must
+  // never reach sendInvoice — skip the whole stage before any DB claim.
+  if (dryRun) {
+    return 0;
+  }
+
   const claimed = await db
     .update(invoiceRuns)
     .set({

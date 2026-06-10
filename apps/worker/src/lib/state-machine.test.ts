@@ -1,5 +1,10 @@
 import { expect, test, describe } from 'bun:test';
-import { shouldSnapshotFallback, interpretClaimResult } from './state-machine.ts';
+import {
+  shouldSnapshotFallback,
+  interpretClaimResult,
+  reconcileInFlightSends,
+  retryIssuedRows,
+} from './state-machine.ts';
 
 describe('shouldSnapshotFallback — only daily/weekly trigger snapshot path', () => {
   test('daily order with 422 fully-invoiced → snapshot', () => {
@@ -48,5 +53,29 @@ describe('interpretClaimResult — claim-row race interpretation', () => {
       { orderId: 13, invoiceId: null, billingPeriod: '2026-05-22', status: 'creating' },
     );
     expect(result.kind).toBe('concurrent-in-flight');
+  });
+});
+
+describe('dry-run safety — crash recovery must not touch the DB or send (BUG-1)', () => {
+  // A db whose every property access throws. If either recovery stage reaches
+  // the database in dry-run, the test fails loudly — proving no invoice can be
+  // re-sent and no invoice_runs row mutated during a "safe preview" run.
+  const guardDb = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        throw new Error(`DB accessed during dry-run via db.${String(prop)}`);
+      },
+    },
+  ) as never;
+
+  test('reconcileInFlightSends in dry-run returns zeros without DB access', async () => {
+    const result = await reconcileInFlightSends(guardDb, 'fake-token', true);
+    expect(result).toEqual({ reconciledSent: 0, reconciledIssued: 0, reconciledFailed: 0 });
+  });
+
+  test('retryIssuedRows in dry-run returns 0 without DB access', async () => {
+    const result = await retryIssuedRows(guardDb, 'fake-token', {} as never, true);
+    expect(result).toBe(0);
   });
 });

@@ -94,8 +94,12 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   const sync = await syncRecurringOrders(db, accessToken, { dryRun: options.dryRun });
 
   // ── 3 + 4. Crash recovery ───────────────────────────────────
-  const reconcile = await reconcileInFlightSends(db, accessToken);
-  const retriedFromIssued = await retryIssuedRows(db, accessToken, settings);
+  // Both stages issue/send real invoices and write terminal states. They MUST
+  // honor dryRun (BUG-1): previously they ran unconditionally before the
+  // dry-run gate below, so a "dry" run silently re-mailed any parked 'issued'
+  // invoice. The dryRun flag short-circuits both before any side-effect.
+  const reconcile = await reconcileInFlightSends(db, accessToken, options.dryRun);
+  const retriedFromIssued = await retryIssuedRows(db, accessToken, settings, options.dryRun);
 
   // ── 5. Process enabled orders ───────────────────────────────
   const enabled = options.onlyOrderId == null
