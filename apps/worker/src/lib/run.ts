@@ -94,6 +94,11 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   const accessToken = await getValidAccessToken(db);
   const settings = await loadWorkerSettings(db);
   const sync = await syncRecurringOrders(db, accessToken, { dryRun: options.dryRun });
+  // EDGE-2: orders skipped mid-sync surface as run errors (→ bot_runs + Discord)
+  // instead of silently vanishing.
+  for (const f of sync.failedOrders) {
+    errors.push({ stage: `sync(order ${f.bexioOrderId})`, message: f.message });
+  }
 
   // ── 3 + 4. Crash recovery ───────────────────────────────────
   // Both stages issue/send real invoices and write terminal states. They MUST

@@ -26,8 +26,8 @@ try {
   console.log(`  token: ${token.length} chars (refresh-aware)`);
 
   // 3. List recurring orders from bexio
-  const orders = await listRecurringOrders(token);
-  console.log(`  recurring orders: ${orders.length} from bexio`);
+  const { orders, truncated } = await listRecurringOrders(token);
+  console.log(`  recurring orders: ${orders.length} from bexio${truncated ? ' (TRUNCATED at cap)' : ''}`);
 
   // 4. Enabled orders summary
   console.log('');

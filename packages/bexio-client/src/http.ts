@@ -39,6 +39,40 @@ function classifyStatus(status: number): BexioErrorClass {
   return 'permanent';
 }
 
+// Hard ceiling on every bexio request. Without it, an auth/API host that accepts
+// the TCP connection but never responds hangs the fetch forever — and during a
+// token refresh that pins the pg advisory lock + a pooled DB connection
+// indefinitely, silently freezing all billing (BUG-4). 20s is far above any
+// legitimate bexio response yet bounds the worst case.
+const FETCH_TIMEOUT_MS = 20_000;
+
+/**
+ * Turn a fetch rejection (timeout or network failure) into a classified,
+ * transient BexioApiError so the state machine retries instead of crashing — and
+ * so a hung token-refresh cannot outlive the bounded call. Pure, so the mapping
+ * is unit-tested without a network. (BUG-4)
+ */
+export function classifyFetchError(err: unknown): BexioApiError {
+  if (err instanceof BexioApiError) return err;
+  const name = err instanceof Error ? err.name : '';
+  const isTimeout = name === 'TimeoutError' || name === 'AbortError';
+  return new BexioApiError(
+    isTimeout ? 408 : 503,
+    'transient',
+    isTimeout
+      ? `bexio request timed out after ${FETCH_TIMEOUT_MS}ms`
+      : `network error: ${err instanceof Error ? err.message : String(err)}`,
+  );
+}
+
+async function fetchWithTimeout(input: string | URL, init: RequestInit = {}): Promise<Response> {
+  try {
+    return await fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    throw classifyFetchError(err);
+  }
+}
+
 export type ApiCallOptions = {
   accessToken: string;
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -74,7 +108,7 @@ export async function callBexio<T>(path: string, opts: ApiCallOptions): Promise<
   if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body);
   }
-  const res = await fetch(url, init);
+  const res = await fetchWithTimeout(url, init);
 
   if (!res.ok) {
     const bodyText = await res.text();
@@ -99,7 +133,10 @@ export async function callBexio<T>(path: string, opts: ApiCallOptions): Promise<
 // Token endpoint uses different base URL + different content type
 export async function callTokenEndpoint(formBody: URLSearchParams): Promise<Response> {
   await pace();
-  return fetch(`${BEXIO_AUTH_BASE}/token`, {
+  // fetchWithTimeout: a hung auth host must NOT pin the token-refresh advisory
+  // lock indefinitely (BUG-4). On timeout/network-failure this throws a transient
+  // BexioApiError, which rolls back the refresh transaction and releases the lock.
+  return fetchWithTimeout(`${BEXIO_AUTH_BASE}/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: formBody,

@@ -5,13 +5,22 @@ import type { BexioOrder, BexioOrderRepetition } from './types.ts';
 
 const PAGE_LIMIT = 200;
 
+export type ListRecurringOrdersResult = {
+  orders: BexioOrder[];
+  /** True if pagination hit the 5000 safety cap — the list is PARTIAL, so the
+   *  caller must NOT treat absent orders as deleted (would wipe past-cap rows). */
+  truncated: boolean;
+};
+
 /**
- * List recurring orders (is_recurring=true). Pages until empty.
- * Bexio's pagination uses limit + offset on /kb_order.
+ * List recurring orders (is_recurring=true). Pages until empty or the safety cap.
+ * Bexio's pagination uses limit + offset on /kb_order. Returns `truncated` so the
+ * sync's orphan cleanup can refuse to run on a partial list (EDGE-1).
  */
-export async function listRecurringOrders(accessToken: string): Promise<BexioOrder[]> {
+export async function listRecurringOrders(accessToken: string): Promise<ListRecurringOrdersResult> {
   const all: BexioOrder[] = [];
   let offset = 0;
+  let truncated = false;
 
   while (true) {
     const page = await callBexio<BexioOrder[]>('/kb_order', {
@@ -26,15 +35,18 @@ export async function listRecurringOrders(accessToken: string): Promise<BexioOrd
     offset += PAGE_LIMIT;
 
     // Hard cap to avoid infinite loops if bexio behavior changes — degrade
-    // gracefully (log + break) rather than throwing, which would abort the
-    // entire daily run before any orders get processed. (F-11)
+    // gracefully (flag + break) rather than throwing, which would abort the
+    // entire daily run before any orders get processed. (F-11) The `truncated`
+    // flag tells the caller the list is incomplete so it can skip orphan
+    // cleanup instead of deleting every order past the cap. (EDGE-1)
     if (offset > 5000) {
-      console.warn('listRecurringOrders: > 5000 orders, capping at 5000 for safety');
+      console.warn('listRecurringOrders: > 5000 orders, capping at 5000 — list is PARTIAL, orphan cleanup will be skipped');
+      truncated = true;
       break;
     }
   }
 
-  return all;
+  return { orders: all, truncated };
 }
 
 /**

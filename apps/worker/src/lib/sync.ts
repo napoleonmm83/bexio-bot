@@ -24,6 +24,33 @@ import { computeNextBilling } from './next-billing.ts';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
 
+/**
+ * Decide whether the FULL-sync orphan cleanup may run. It hard-DELETEs every
+ * cached order NOT in the seen set, so it MUST refuse on a list that is either
+ * empty (F-7: transient API blip) or truncated at the pagination cap (EDGE-1:
+ * a partial list would delete every legitimately-tracked order past the cap,
+ * losing their enabled/opt-in flags permanently). Pure → unit-tested.
+ */
+export function shouldRunOrphanCleanup(input: { seenCount: number; truncated: boolean }): boolean {
+  if (input.seenCount === 0) return false;
+  if (input.truncated) return false;
+  return true;
+}
+
+/**
+ * Coerce a bexio order `total` (raw JSON, typed string but null/odd at runtime)
+ * into a safe decimal string for the NOT NULL expected_amount column (EDGE-2).
+ * A malformed value must never abort the sync. expected_amount is display/drift
+ * only — the real invoice amount comes from bexio at creation time — so a
+ * missing total safely becomes '0'.
+ */
+export function coerceExpectedAmount(total: unknown): string {
+  if (total == null) return '0';
+  const s = String(total).trim();
+  if (s === '') return '0';
+  return Number.isFinite(Number(s)) ? s : '0';
+}
+
 export type SyncResult = {
   total: number;
   newlyAdded: number;
@@ -38,6 +65,9 @@ export type SyncResult = {
    *  (the order path inherits the frozen one). Detect-and-flag only — never
    *  auto-changed; a reused contact_id could otherwise mis-attribute the invoice. */
   driftWarnings: Array<{ bexioOrderId: number; customerName: string; detail: string }>;
+  /** Orders that threw mid-sync and were skipped (EDGE-2) — surfaced instead of
+   *  aborting the whole run. They remain in the cache (counted as seen). */
+  failedOrders: Array<{ bexioOrderId: number; message: string }>;
 };
 
 const WATERMARK_KEY = 'last_incremental_sync_at';
@@ -161,13 +191,18 @@ export async function syncRecurringOrders(
   // so notInArray would wrongly wipe every untouched (and enabled!) order.
   // FULL: list all recurring orders and run orphan cleanup.
   let orders: BexioOrder[];
+  // Whether the FULL list was cut off at the pagination cap. Incremental never
+  // does orphan cleanup, so its (harmless) truncation stays false here.
+  let truncated = false;
   if (mode === 'incremental') {
     const raw = await getSetting(db, WATERMARK_KEY);
     const base = raw ? new Date(raw) : new Date(runStart.getTime() - 7 * 86_400_000);
     const floor = new Date(base.getTime() - 6 * 3_600_000);
     orders = await listRecurringOrdersSince(accessToken, formatBexioTimestamp(floor));
   } else {
-    orders = await listRecurringOrders(accessToken);
+    const listed = await listRecurringOrders(accessToken);
+    orders = listed.orders;
+    truncated = listed.truncated;
   }
 
   let newlyAdded = 0;
@@ -175,77 +210,88 @@ export async function syncRecurringOrders(
   const newOrders: SyncResult['newOrders'] = [];
   const unsupportedOrders: SyncResult['unsupportedOrders'] = [];
   const driftWarnings: SyncResult['driftWarnings'] = [];
+  const failedOrders: SyncResult['failedOrders'] = [];
   const seenIds = new Set<number>();
 
   // Cache contacts so two orders from the same customer don't trigger two API calls
   const contactCache: ContactCache = new Map();
 
   for (const o of orders) {
+    // Mark seen FIRST — even an order that fails to process exists in bexio and
+    // must not be orphan-deleted. (EDGE-2)
     seenIds.add(o.id);
-    const { interval, intervalMultiplier, nextBillingDate, customerName, customerEmail, bexioStatus, repetitionFetchOk, unsupportedType, driftWarning } =
-      await buildOrderRow(accessToken, o, contactCache);
-    if (driftWarning) {
-      driftWarnings.push({ bexioOrderId: o.id, customerName, detail: driftWarning });
-    }
-
-    if (options.dryRun) {
-      // N-11: dry-run must not mutate state. Treat unknown orders as 'newly
-      // added' for reporting only.
-      newOrders.push({ bexioOrderId: o.id, customerName, interval });
-      newlyAdded += 1;
-      if (unsupportedType) {
-        unsupportedOrders.push({ bexioOrderId: o.id, customerName, bexioType: unsupportedType });
+    try {
+      const { interval, intervalMultiplier, nextBillingDate, customerName, customerEmail, bexioStatus, repetitionFetchOk, unsupportedType, driftWarning } =
+        await buildOrderRow(accessToken, o, contactCache);
+      if (driftWarning) {
+        driftWarnings.push({ bexioOrderId: o.id, customerName, detail: driftWarning });
       }
-      continue;
-    }
 
-    // INSERT ... ON CONFLICT — if row exists, refresh cache fields incl. status.
-    // Never touch `enabled` — that's the user's opt-in; auto-discovery (sync)
-    // always lands disabled. (Only importOrderById may force-enable.)
-    const result = await db
-      .insert(recurringOrders)
-      .values({
-        bexioOrderId: o.id,
-        customerId: o.contact_id,
-        customerName,
-        customerEmail,
-        interval,
-        intervalMultiplier,
-        expectedAmount: o.total,
-        nextBillingDate,
-        enabled: false,
-        bexioStatus,
-        bexioStatusId: o.kb_item_status_id ?? null,
-        syncedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: recurringOrders.bexioOrderId,
-        set: {
+      if (options.dryRun) {
+        // N-11: dry-run must not mutate state. Treat unknown orders as 'newly
+        // added' for reporting only.
+        newOrders.push({ bexioOrderId: o.id, customerName, interval });
+        newlyAdded += 1;
+        if (unsupportedType) {
+          unsupportedOrders.push({ bexioOrderId: o.id, customerName, bexioType: unsupportedType });
+        }
+        continue;
+      }
+
+      // INSERT ... ON CONFLICT — if row exists, refresh cache fields incl. status.
+      // Never touch `enabled` — that's the user's opt-in; auto-discovery (sync)
+      // always lands disabled. (Only importOrderById may force-enable.)
+      const result = await db
+        .insert(recurringOrders)
+        .values({
+          bexioOrderId: o.id,
+          customerId: o.contact_id,
           customerName,
           customerEmail,
           interval,
           intervalMultiplier,
-          expectedAmount: o.total,
-          // Preserve existing nextBillingDate if repetition fetch failed —
-          // overwriting with today would corrupt a previously-good value. (F-10)
-          ...(repetitionFetchOk ? { nextBillingDate } : {}),
+          expectedAmount: coerceExpectedAmount(o.total),
+          nextBillingDate,
+          enabled: false,
           bexioStatus,
           bexioStatusId: o.kb_item_status_id ?? null,
           syncedAt: new Date(),
-        },
-      })
-      .returning({ inserted: sql<boolean>`xmax = 0` });
+        })
+        .onConflictDoUpdate({
+          target: recurringOrders.bexioOrderId,
+          set: {
+            customerName,
+            customerEmail,
+            interval,
+            intervalMultiplier,
+            expectedAmount: coerceExpectedAmount(o.total),
+            // Preserve existing nextBillingDate if repetition fetch failed —
+            // overwriting with today would corrupt a previously-good value. (F-10)
+            ...(repetitionFetchOk ? { nextBillingDate } : {}),
+            bexioStatus,
+            bexioStatusId: o.kb_item_status_id ?? null,
+            syncedAt: new Date(),
+          },
+        })
+        .returning({ inserted: sql<boolean>`xmax = 0` });
 
-    const wasInsert = result[0]?.inserted ?? false;
-    if (wasInsert) {
-      newlyAdded += 1;
-      newOrders.push({ bexioOrderId: o.id, customerName, interval });
-    } else {
-      alreadyTracked += 1;
-    }
+      const wasInsert = result[0]?.inserted ?? false;
+      if (wasInsert) {
+        newlyAdded += 1;
+        newOrders.push({ bexioOrderId: o.id, customerName, interval });
+      } else {
+        alreadyTracked += 1;
+      }
 
-    if (unsupportedType) {
-      unsupportedOrders.push({ bexioOrderId: o.id, customerName, bexioType: unsupportedType });
+      if (unsupportedType) {
+        unsupportedOrders.push({ bexioOrderId: o.id, customerName, bexioType: unsupportedType });
+      }
+    } catch (err) {
+      // One malformed/unexpected order must not abort the whole sync (and with
+      // it the entire daily billing run). Skip it, surface it, keep going. (EDGE-2)
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`sync: order ${o.id} failed — skipping (cache row left as-is):`, message);
+      failedOrders.push({ bexioOrderId: o.id, message });
     }
   }
 
@@ -254,11 +300,13 @@ export async function syncRecurringOrders(
   let removedOrders = 0;
   if (mode === 'full' && !options.dryRun) {
     const seenArray = [...seenIds];
-    if (seenArray.length === 0) {
-      // bexio returned zero recurring orders. Almost certainly a transient API
-      // issue, not "Marcus deleted everything". Skip — wiping would lose all
-      // opt-in enabled flags. (F-7)
-      console.warn('sync: bexio returned zero recurring orders — skipping orphan cleanup to protect cache');
+    if (!shouldRunOrphanCleanup({ seenCount: seenArray.length, truncated })) {
+      // Empty list (F-7: transient blip) or truncated at the cap (EDGE-1: partial
+      // list). Deleting now would wipe orders that still exist in bexio, losing
+      // their opt-in enabled flags permanently.
+      console.warn(
+        `sync: skipping orphan cleanup (seen=${seenArray.length}, truncated=${truncated}) to protect cache (F-7, EDGE-1)`,
+      );
     } else {
       const deleted = await db
         .delete(recurringOrders)
@@ -276,7 +324,7 @@ export async function syncRecurringOrders(
     await setSetting(db, WATERMARK_KEY, runStart.toISOString());
   }
 
-  return { total: orders.length, newlyAdded, alreadyTracked, removedOrders, newOrders, unsupportedOrders, driftWarnings };
+  return { total: orders.length, newlyAdded, alreadyTracked, removedOrders, newOrders, unsupportedOrders, driftWarnings, failedOrders };
 }
 
 export type ImportOrderResult =
