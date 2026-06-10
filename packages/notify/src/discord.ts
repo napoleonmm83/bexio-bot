@@ -42,6 +42,9 @@ export type DiscordRunReport = {
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
   /** Orders whose frozen billing address diverges from the live contact. */
   driftWarnings?: Array<{ bexioOrderId: number; customerName: string; detail: string }>;
+  /** Recurring orders whose bexio repetition type the bot can't process — surfaced
+   *  so they aren't silently dropped by the orchestrator (EDGE-8). */
+  unsupportedOrders?: Array<{ bexioOrderId: number; customerName: string; bexioType: string }>;
   subscriptionResults: Array<{
     kind: 'sent' | 'skipped_duplicate' | 'failed';
     subscriptionId: number;
@@ -83,7 +86,32 @@ export async function sendMessage(webhookUrl: string, content: string): Promise<
 
 // ── Internal helpers ──────────────────────────────────────────────
 
+const ALLOWED_WEBHOOK_HOSTS = ['discord.com', 'discordapp.com'];
+
+/**
+ * Allowlist a Discord webhook URL (SEC-4). The URL is operator-supplied via
+ * /settings and the worker POSTs run summaries to it server-side, so an
+ * unconstrained host is an SSRF vector (internal services, cloud metadata).
+ * Require https + an official Discord host (exact or sub-domain).
+ */
+export function isAllowedDiscordWebhook(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') return false;
+  const host = url.hostname.toLowerCase();
+  return ALLOWED_WEBHOOK_HOSTS.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
 async function postWebhook(webhookUrl: string, body: unknown): Promise<DiscordSendResult> {
+  // Belt-and-suspenders SSRF guard: even if a bad URL slipped past the /settings
+  // validation (or was set out-of-band), never POST to a non-Discord host. (SEC-4)
+  if (!isAllowedDiscordWebhook(webhookUrl)) {
+    return { ok: false, error: 'refusing to POST to non-Discord webhook host (SEC-4)' };
+  }
   try {
     const res = await fetch(webhookUrl, {
       method: 'POST',
@@ -181,6 +209,17 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
     fields.push({
       name: 'Nicht fällig',
       value: `${notDue.length} aktive Aufträge — bexio sagt "noch nicht fällig"`,
+      inline: false,
+    });
+  }
+  if (r.unsupportedOrders && r.unsupportedOrders.length > 0) {
+    fields.push({
+      name: '⚠ Nicht unterstützt',
+      value: r.unsupportedOrders
+        .slice(0, 8)
+        .map((u) => `· #${u.bexioOrderId} ${truncate(u.customerName, 32)}: ${u.bexioType}`)
+        .join('\n')
+        .slice(0, 1024),
       inline: false,
     });
   }

@@ -11,6 +11,11 @@ import {
   DEFAULT_MAIL_MESSAGE,
   DEFAULT_DASHBOARD_URL,
 } from '@bexio-bot/worker/settings';
+import { isAllowedDiscordWebhook } from '@bexio-bot/notify';
+
+// Catch-up tolerance beyond this only back-bills a stale order's latest past
+// occurrence; a huge value disables the due-gate entirely. (EDGE-10)
+const MAX_DUE_WINDOW_DAYS = 31;
 
 const WEBHOOK_MASK = '••••••••••••';
 
@@ -106,8 +111,13 @@ export const actions: Actions = {
     // Write-only masked field: only overwrite when the user typed a real value.
     const webhook = String(data.get('discord_webhook_url') ?? '').trim();
     if (webhook && webhook !== WEBHOOK_MASK) {
-      if (!/^https:\/\/.+/.test(webhook)) {
-        return fail(400, { section: 'notifications', error: 'Webhook-URL muss mit https:// beginnen.' });
+      // SEC-4: the worker POSTs to this URL server-side — restrict to official
+      // Discord hosts so it can't be pointed at an internal service (SSRF).
+      if (!isAllowedDiscordWebhook(webhook)) {
+        return fail(400, {
+          section: 'notifications',
+          error: 'Webhook-URL muss ein https://-Discord-Host sein (discord.com / discordapp.com).',
+        });
       }
       await setSetting(db, 'discord_webhook_url', webhook);
     }
@@ -135,6 +145,14 @@ export const actions: Actions = {
     }
     if (!Number.isInteger(due) || due < 0) {
       return fail(400, { section: 'invoicing', error: 'Fälligkeits-Toleranz muss eine ganze Zahl ≥ 0 sein.' });
+    }
+    // EDGE-10: cap the window — a large value disables the due-gate and would
+    // back-bill far ahead of schedule.
+    if (due > MAX_DUE_WINDOW_DAYS) {
+      return fail(400, {
+        section: 'invoicing',
+        error: `Fälligkeits-Toleranz darf höchstens ${MAX_DUE_WINDOW_DAYS} Tage sein (grössere Werte hebeln das Fälligkeits-Gate aus).`,
+      });
     }
 
     await setSetting(db, 'invoice_mail_subject', subject);

@@ -5,6 +5,7 @@
 export {
   sendRunReport as sendDiscordRunReport,
   sendMessage as sendDiscordMessage,
+  isAllowedDiscordWebhook,
   type DiscordRunReport,
   type DiscordSendResult,
 } from './discord.ts';

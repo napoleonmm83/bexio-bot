@@ -55,9 +55,24 @@ const SETTING_KEYS = [
   'dashboard_url',
 ];
 
+/** Max catch-up tolerance. Beyond ~one interval a larger window only back-bills
+ *  a stale order's latest past occurrence — and a huge value effectively disables
+ *  the due-gate, re-introducing the "fires immediately" bug. (EDGE-10) */
+const MAX_DUE_WINDOW_DAYS = 31;
+
+/**
+ * Coerce the order-due-window into a bounded non-negative integer (EDGE-10).
+ * Defends the worker against an out-of-range stale DB/env value; the web form
+ * is the authoritative entry point but this is the last line.
+ */
+export function clampDueWindowDays(raw: string | number | undefined, max = MAX_DUE_WINDOW_DAYS): number {
+  const n = Math.floor(Number(raw ?? 3));
+  if (!Number.isFinite(n) || n < 0) return 3;
+  return Math.min(n, max);
+}
+
 function parseWindowDays(raw: string | undefined): number {
-  const n = Number(raw ?? '3');
-  return Number.isFinite(n) && n >= 0 ? n : 3;
+  return clampDueWindowDays(raw);
 }
 
 function parseBool(raw: string | undefined, fallback: boolean): boolean {

@@ -36,8 +36,11 @@ export const GET: RequestHandler = async () => {
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
   } catch (err) {
+    // SEC-3: /health is unauthenticated (Coolify canary). Driver errors can carry
+    // connection-string fragments / host / role — log server-side, return generic.
+    console.error('[health] db_error:', err);
     return new Response(
-      JSON.stringify({ status: 'db_error', error: err instanceof Error ? err.message : String(err) }),
+      JSON.stringify({ status: 'db_error' }),
       { status: 503, headers: { 'Content-Type': 'application/json' } },
     );
   }

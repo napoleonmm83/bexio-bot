@@ -73,6 +73,51 @@ async function fetchWithTimeout(input: string | URL, init: RequestInit = {}): Pr
   }
 }
 
+const RETRY_AFTER_CAP_MS = 30_000;
+
+/**
+ * Translate a bexio `Retry-After` (seconds) into a capped delay in ms, or null
+ * when there's no actionable hint. callBexio honors this on a 429 before
+ * surfacing the rate_limit error, instead of waiting a whole day. (BUG-6)
+ */
+export function retryAfterDelayMs(retryAfterSeconds: number | undefined): number | null {
+  if (retryAfterSeconds == null || !Number.isFinite(retryAfterSeconds) || retryAfterSeconds < 0) return null;
+  return Math.min(retryAfterSeconds * 1000, RETRY_AFTER_CAP_MS);
+}
+
+function extractOAuthError(body: string): string | undefined {
+  try {
+    const j = JSON.parse(body) as { error?: unknown };
+    if (j && typeof j.error === 'string') return j.error;
+  } catch {
+    /* not JSON */
+  }
+  try {
+    const e = new URLSearchParams(body).get('error');
+    if (e) return e;
+  } catch {
+    /* not form-encoded */
+  }
+  const m = body.match(/"error"\s*:\s*"([^"]+)"/);
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Classify a token-endpoint error AND redact the body (BUG-8, SEC-2). The raw
+ * OAuth response can echo back the refresh_token, so we surface ONLY the OAuth
+ * `error` code, never the body. Status drives transient/rate_limit so a 429/5xx
+ * from the IdP isn't mislabeled 'auth' (which signals "re-run oauth-setup").
+ */
+export function classifyTokenError(status: number, body: string): { errorClass: BexioErrorClass; message: string } {
+  const code = extractOAuthError(body);
+  let errorClass: BexioErrorClass;
+  if (status === 429) errorClass = 'rate_limit';
+  else if (status >= 500) errorClass = 'transient';
+  else if (code === 'invalid_grant' || code === 'invalid_client' || status === 401 || status === 403) errorClass = 'auth';
+  else errorClass = classifyStatus(status);
+  return { errorClass, message: `Token refresh failed: ${code ?? `HTTP ${status}`}` };
+}
+
 export type ApiCallOptions = {
   accessToken: string;
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -84,7 +129,7 @@ export type ApiCallOptions = {
  * Single API call with paced execution + error classification.
  * Caller is responsible for retry policy (state machine in worker handles attempts).
  */
-export async function callBexio<T>(path: string, opts: ApiCallOptions): Promise<T> {
+export async function callBexio<T>(path: string, opts: ApiCallOptions, retryOn429 = true): Promise<T> {
   await pace();
 
   const url = new URL(`${BEXIO_API_BASE}${path.startsWith('/') ? path : `/${path}`}`);
@@ -119,6 +164,15 @@ export async function callBexio<T>(path: string, opts: ApiCallOptions): Promise<
       if (headerValue) {
         const parsed = parseInt(headerValue, 10);
         if (!Number.isNaN(parsed)) retryAfter = parsed;
+      }
+      // BUG-6: honor the server's backoff hint — sleep then retry the SAME call
+      // once before surfacing rate_limit (which otherwise only retries next run).
+      // Idempotency is enforced at the state-machine/claim layer, so a single
+      // bounded retry of one request is safe.
+      const delay = retryAfterDelayMs(retryAfter);
+      if (retryOn429 && delay != null) {
+        await new Promise((r) => setTimeout(r, delay));
+        return callBexio<T>(path, opts, false);
       }
     }
     throw new BexioApiError(res.status, errorClass, bodyText, retryAfter);

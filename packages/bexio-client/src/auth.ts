@@ -5,7 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { secrets } from '@bexio-bot/db';
 import { BexioApiError, type TokenResponse } from './types.ts';
-import { callTokenEndpoint } from './http.ts';
+import { callTokenEndpoint, classifyTokenError } from './http.ts';
 
 // Refresh proactively when access token expires within this window.
 const REFRESH_BUFFER_MS = 60_000;
@@ -93,7 +93,11 @@ export async function getValidAccessToken(db: Db): Promise<string> {
     const res = await callTokenEndpoint(params);
     if (!res.ok) {
       const body = await res.text();
-      throw new BexioApiError(res.status, 'auth', `Token refresh failed: ${body}`);
+      // BUG-8 + SEC-2: classify by status (429/5xx are transient, not 'auth') and
+      // surface ONLY the OAuth error code — the raw body can echo the refresh token
+      // and is persisted to bot_runs.errorsJsonb + the dashboard + S3 backups.
+      const { errorClass, message } = classifyTokenError(res.status, body);
+      throw new BexioApiError(res.status, errorClass, message);
     }
 
     const tokens = (await res.json()) as TokenResponse;

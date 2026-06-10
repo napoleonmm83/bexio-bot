@@ -254,6 +254,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     enabledOrders: enabled.length,
     newOrders: sync.newOrders,
     driftWarnings: sync.driftWarnings,
+    unsupportedOrders: sync.unsupportedOrders,
     errors,
     results: results.map((r) => ({
       customerName: r.customerName,

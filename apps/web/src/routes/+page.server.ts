@@ -16,10 +16,14 @@ export const load: PageServerLoad = async () => {
     .orderBy(desc(botRuns.startedAt))
     .limit(1);
 
+  // EDGE-6: compute "today" on the Europe/Zurich business calendar, not the DB
+  // session TZ (UTC on the Coolify server). Otherwise late-evening CH invoices
+  // (after the UTC midnight roll-over) land on the wrong day, and 00:00–02:00 CH
+  // shows yesterday. Matches the Europe/Zurich billing_period keys.
   const todayInvoicesPromise = db
     .select()
     .from(invoiceRuns)
-    .where(sql`${invoiceRuns.sentAt}::date = current_date OR ${invoiceRuns.updatedAt}::date = current_date`)
+    .where(sql`(${invoiceRuns.sentAt} AT TIME ZONE 'Europe/Zurich')::date = (now() AT TIME ZONE 'Europe/Zurich')::date OR (${invoiceRuns.updatedAt} AT TIME ZONE 'Europe/Zurich')::date = (now() AT TIME ZONE 'Europe/Zurich')::date`)
     .orderBy(desc(invoiceRuns.updatedAt));
 
   // One query for the whole table. Sort by next-due so overdue + soon-due
