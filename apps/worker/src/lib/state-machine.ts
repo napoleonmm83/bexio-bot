@@ -216,7 +216,10 @@ export async function processOrder(
       orderId: order.bexioOrderId,
       billingPeriod,
       status: 'creating',
-      attempts: 1,
+      // BUG-2: attempts counts SEND attempts, not claim existence. Start at 0;
+      // it is bumped to 1 right before sendInvoice. Crash recovery relies on
+      // attempts===0 to mean "claimed/issued but send never attempted" → retry.
+      attempts: 0,
     })
     .onConflictDoNothing({ target: [invoiceRuns.orderId, invoiceRuns.billingPeriod] })
     .returning({ orderId: invoiceRuns.orderId, status: invoiceRuns.status, invoiceId: invoiceRuns.invoiceId });
@@ -422,6 +425,13 @@ export async function processOrder(
     await transitionTo(db, order.bexioOrderId, billingPeriod, 'sending', {
       lockAcquiredAt: new Date(),
     });
+    // BUG-2: mark the send as ATTEMPTED right before the network call. A crash
+    // after this point (attempts>0) is reconciled as assumed-sent (N-5); a crash
+    // in 'sending' with attempts===0 means we never reached here → safe to retry.
+    await db
+      .update(invoiceRuns)
+      .set({ attempts: sql`${invoiceRuns.attempts} + 1`, updatedAt: new Date() })
+      .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
     await sendInvoice(accessToken, invoice.id, {
       recipientEmail: order.customerEmail,
       subject: renderTemplate(config.mailSubject, { document_nr: docNr }),
@@ -514,6 +524,42 @@ async function markFailed(db: Db, orderId: number, billingPeriod: string, err: u
     .where(and(eq(invoiceRuns.orderId, orderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
 }
 
+export type StuckSendingDecision = 'confirmed-sent' | 'assumed-sent' | 'retry';
+
+/**
+ * Decide what to do with a stale `status='sending'` row during crash recovery
+ * (BUG-2 / BUG-7). Pure so the branch logic is unit-tested in isolation.
+ *
+ * - confirmed-sent: bexio confirms the mail went out — trust it.
+ * - assumed-sent:   bexio doesn't confirm, but `attempts > 0` means the send
+ *                   WAS attempted. bexio's is_sent read-back is flaky, so we
+ *                   assume it landed rather than re-mail a duplicate (N-5).
+ * - retry:          `attempts === 0` means we entered 'sending' but crashed
+ *                   BEFORE the send was attempted (attempts is bumped right
+ *                   before sendInvoice, not at claim time). No mail went out,
+ *                   so retry instead of falsely marking it sent.
+ */
+export function classifyStuckSendingRow(input: {
+  liveIsSent: boolean;
+  liveMailSentAt: string | null | undefined;
+  attempts: number;
+}): StuckSendingDecision {
+  if (input.liveIsSent || input.liveMailSentAt) return 'confirmed-sent';
+  if (input.attempts > 0) return 'assumed-sent';
+  return 'retry';
+}
+
+/**
+ * Before re-mailing a row parked in 'issued', honor bexio's sent flags (BUG-3).
+ * retryIssuedRows re-sends 'issued' rows; a row can land back in 'issued' via
+ * the F-2 rollback AFTER sendInvoice already succeeded (the 'sent' DB write
+ * failed on a transient blip). Re-sending then double-mails the customer.
+ * Returns false when bexio already shows the invoice as sent.
+ */
+export function shouldResendIssuedRow(live: { is_sent?: boolean; mail_sent_at?: string | null }): boolean {
+  return !(live.is_sent || live.mail_sent_at);
+}
+
 /**
  * Crash recovery: find rows in mid-flight whose lock has gone stale.
  * For each, ask bexio if the invoice was actually sent. Resolve accordingly.
@@ -522,6 +568,8 @@ async function markFailed(db: Db, orderId: number, billingPeriod: string, err: u
  */
 export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun = false): Promise<{
   reconciledSent: number;
+  /** N-5 assume-sent fallback (bexio didn't confirm) — surfaced so it is NOT silent (BUG-2). */
+  reconciledAssumedSent: number;
   reconciledIssued: number;
   reconciledFailed: number;
 }> {
@@ -529,7 +577,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
   // writing terminal states — pure side-effects. A dry-run must skip it
   // entirely so a "safe preview" can never mail a customer or mutate a row.
   if (dryRun) {
-    return { reconciledSent: 0, reconciledIssued: 0, reconciledFailed: 0 };
+    return { reconciledSent: 0, reconciledAssumedSent: 0, reconciledIssued: 0, reconciledFailed: 0 };
   }
 
   const cutoff = new Date(Date.now() - LOCK_STALE_MS);
@@ -545,6 +593,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
     );
 
   let reconciledSent = 0;
+  let reconciledAssumedSent = 0;
   let reconciledIssued = 0;
   let reconciledFailed = 0;
 
@@ -557,41 +606,38 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
 
     try {
       const live = await getInvoice(accessToken, row.invoiceId);
-      if (live.is_sent || live.mail_sent_at) {
+      const decision = classifyStuckSendingRow({
+        liveIsSent: Boolean(live.is_sent),
+        liveMailSentAt: live.mail_sent_at,
+        attempts: row.attempts ?? 0,
+      });
+      if (decision === 'confirmed-sent') {
         // bexio confirms sent — trust it.
         await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {
           sentAt: live.mail_sent_at ? new Date(live.mail_sent_at) : new Date(),
           lockAcquiredAt: null,
         });
         reconciledSent += 1;
-      } else if ((row.attempts ?? 0) >= 1) {
-        // bexio doesn't confirm sent, but we ALREADY tried at least once.
-        // bexio's GET /kb_invoice/{id} is famously flaky here — is_sent may
-        // stay undefined even after a successful /send (see invoices.ts:182).
-        // Assume the send happened to avoid spamming the customer with
-        // duplicate mails. If it really didn't go out, Marcus will notice
-        // from a missing receipt and can re-trigger manually. (N-5)
+      } else if (decision === 'assumed-sent') {
+        // We attempted the send (attempts>0) but bexio's flaky GET /kb_invoice
+        // is_sent read-back stays undefined (invoices.ts). Assume it landed to
+        // avoid re-mailing a duplicate (N-5) — but count it SEPARATELY so it is
+        // surfaced (reconciledAssumedSent) for Marcus to verify delivery (BUG-2).
         console.warn(
-          `[reconcile order=${row.orderId} period=${row.billingPeriod}] bexio is_sent unconfirmed after ${row.attempts} attempts — assuming sent (bexio read-back quirk)`,
+          `[reconcile order=${row.orderId} period=${row.billingPeriod}] bexio is_sent unconfirmed after ${row.attempts} send attempt(s) — assuming sent (read-back quirk); VERIFY delivery`,
         );
         await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {
           sentAt: new Date(),
           lockAcquiredAt: null,
         });
-        reconciledSent += 1;
-      } else if ((row.attempts ?? 0) >= MAX_ATTEMPTS) {
-        await markFailed(db, row.orderId, row.billingPeriod, new Error('send_retries_exhausted'));
-        reconciledFailed += 1;
+        reconciledAssumedSent += 1;
       } else {
-        // attempts === 0 — claimed but never actually called send. Safe to retry.
+        // decision === 'retry': entered 'sending' but crashed BEFORE the send
+        // was attempted (attempts===0). No mail went out — roll back to 'issued'
+        // so retryIssuedRows re-sends cleanly next run (it owns the attempt count).
         await db
           .update(invoiceRuns)
-          .set({
-            status: 'issued',
-            lockAcquiredAt: null,
-            attempts: sql`${invoiceRuns.attempts} + 1`,
-            updatedAt: new Date(),
-          })
+          .set({ status: 'issued', lockAcquiredAt: null, updatedAt: new Date() })
           .where(and(eq(invoiceRuns.orderId, row.orderId), eq(invoiceRuns.billingPeriod, row.billingPeriod)));
         reconciledIssued += 1;
       }
@@ -601,7 +647,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
     }
   }
 
-  return { reconciledSent, reconciledIssued, reconciledFailed };
+  return { reconciledSent, reconciledAssumedSent, reconciledIssued, reconciledFailed };
 }
 
 /**
@@ -648,6 +694,21 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
 
     try {
       const live = await getInvoice(accessToken, row.invoiceId);
+      // BUG-3: a row can land back in 'issued' via the F-2 rollback AFTER
+      // sendInvoice already succeeded (the 'sent' DB write failed on a transient
+      // blip). Re-sending would double-mail the customer. Honor bexio's sent
+      // flags — if already sent, resolve to 'sent' without re-mailing.
+      if (!shouldResendIssuedRow(live)) {
+        console.warn(
+          `[retry order=${row.orderId} period=${row.billingPeriod}] invoice ${row.invoiceId} already sent in bexio — resolving to 'sent' without re-mailing (BUG-3)`,
+        );
+        await transitionTo(db, row.orderId, row.billingPeriod, 'sent', {
+          sentAt: live.mail_sent_at ? new Date(live.mail_sent_at) : new Date(),
+          lockAcquiredAt: null,
+        });
+        recovered += 1;
+        continue;
+      }
       const docNr = live.document_nr;
       await sendInvoice(accessToken, row.invoiceId, {
         recipientEmail: order.customerEmail,

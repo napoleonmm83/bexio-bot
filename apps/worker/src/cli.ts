@@ -78,6 +78,9 @@ try {
     console.log('');
     console.log('Crash recovery:');
     console.log('  reconciled to sent:  ', summary.reconciledSent);
+    if (summary.reconciledAssumedSent > 0) {
+      console.log('  ⚠ assumed sent (VERIFY delivery):', summary.reconciledAssumedSent);
+    }
     console.log('  reconciled to issued:', summary.reconciledIssued);
     console.log('  marked failed:       ', summary.reconciledFailed);
     console.log('  retried from issued: ', summary.retriedFromIssued);

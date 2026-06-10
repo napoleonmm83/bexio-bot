@@ -37,6 +37,8 @@ export type RunSummary = {
   removedOrders: number;
   newOrders: Array<{ bexioOrderId: number; customerName: string; interval: string }>;
   reconciledSent: number;
+  /** N-5 assume-sent fallback (bexio didn't confirm delivery) — verify manually (BUG-2). */
+  reconciledAssumedSent: number;
   reconciledIssued: number;
   reconciledFailed: number;
   retriedFromIssued: number;
@@ -212,6 +214,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     removedOrders: sync.removedOrders,
     newOrders: sync.newOrders,
     reconciledSent: reconcile.reconciledSent,
+    reconciledAssumedSent: reconcile.reconciledAssumedSent,
     reconciledIssued: reconcile.reconciledIssued,
     reconciledFailed: reconcile.reconciledFailed,
     retriedFromIssued,
