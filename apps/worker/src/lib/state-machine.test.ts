@@ -2,6 +2,7 @@ import { expect, test, describe } from 'bun:test';
 import { BexioApiError } from '@bexio-bot/bexio-client';
 import {
   shouldSnapshotFallback,
+  isOrderExhaustedError,
   interpretClaimResult,
   reconcileInFlightSends,
   retryIssuedRows,
@@ -10,6 +11,31 @@ import {
   shouldRefuseZeroAmountInvoice,
   shouldFailOnReadbackError,
 } from './state-machine.ts';
+
+describe('isOrderExhaustedError — 422s that mean "order endpoint exhausted, use snapshot"', () => {
+  const err = (status: number, body: string) => new BexioApiError(status, 'permanent', body);
+
+  test('422 "order is fully invoiced" → true', () => {
+    expect(isOrderExhaustedError(err(422, 'The order is fully invoiced'))).toBe(true);
+  });
+
+  // The real message bexio returned for the stuck monthly order #5 — previously
+  // unmatched, so it fell through to errorClass=permanent → not_due, and the
+  // snapshot fallback was never attempted.
+  test('422 "does not contain any valid positions" → true', () => {
+    expect(
+      isOrderExhaustedError(err(422, '{"error_code":422,"message":"the order does not contain any valid positions"}')),
+    ).toBe(true);
+  });
+
+  test('an unrelated 422 → false (still a real error, not a snapshot trigger)', () => {
+    expect(isOrderExhaustedError(err(422, 'some other validation error'))).toBe(false);
+  });
+
+  test('non-422 with the same text → false', () => {
+    expect(isOrderExhaustedError(err(500, 'the order does not contain any valid positions'))).toBe(false);
+  });
+});
 
 describe('shouldSnapshotFallback — every supported recurring type may snapshot', () => {
   test('daily order with 422 fully-invoiced → snapshot', () => {

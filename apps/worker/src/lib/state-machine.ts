@@ -88,8 +88,22 @@ function todayIsoInZurich(): string {
   return isoDateInZurich(new Date());
 }
 
-function isFullyInvoicedOrderError(err: BexioApiError): boolean {
-  return err.status === 422 && err.body.toLowerCase().includes('order is fully invoiced');
+/**
+ * A 422 from POST /kb_order/{id}/invoice meaning "this order can't be converted
+ * to another invoice — its positions are already invoiced". bexio returns (at
+ * least) two different messages for the same underlying state, depending on the
+ * order:
+ *   - "order is fully invoiced"
+ *   - "the order does not contain any valid positions"
+ * Both must route to the snapshot fallback (which re-copies the order's raw
+ * positions). Matching only the first silently dropped the second → the order
+ * fell through to errorClass='permanent' → not_due, and monthly order #5 was
+ * never re-billed. Fail-closed: any other 422 stays a real error.
+ */
+export function isOrderExhaustedError(err: BexioApiError): boolean {
+  if (err.status !== 422) return false;
+  const b = err.body.toLowerCase();
+  return b.includes('order is fully invoiced') || b.includes('does not contain any valid positions');
 }
 
 /**
@@ -273,16 +287,16 @@ export async function processOrder(
     console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → invoice ${invoice.id}`);
   } catch (err) {
     if (err instanceof BexioApiError) {
-      if (isFullyInvoicedOrderError(err)) {
+      if (isOrderExhaustedError(err)) {
         if (!shouldSnapshotFallback(repetitionType)) {
-          console.log(`${ctx} 422 fully-invoiced on unsupported type "${repetitionType ?? 'unknown'}" — treating as not_due (no snapshot fallback)`);
+          console.log(`${ctx} 422 order-exhausted on unsupported type "${repetitionType ?? 'unknown'}" — treating as not_due (no snapshot fallback)`);
           await deleteClaim(db, order.bexioOrderId, billingPeriod);
           return {
             kind: 'not_due',
-            reason: `422 fully-invoiced (${repetitionType ?? 'unknown'} not-due-this-period; snapshot only allowed for daily/weekly)`,
+            reason: `422 order-exhausted on unsupported type "${repetitionType ?? 'unknown'}" (no snapshot fallback)`,
           };
         }
-        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → 422 fully-invoiced on daily/weekly; trying snapshot fallback`);
+        console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → 422 order-exhausted on ${repetitionType ?? 'unknown'}; trying snapshot fallback`);
         const apiRef = `bexio-bot:order:${order.bexioOrderId}:period:${billingPeriod}`;
         try {
           // API-side idempotency guard: a prior run may have created this invoice
