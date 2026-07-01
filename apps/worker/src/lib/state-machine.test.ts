@@ -11,7 +11,7 @@ import {
   shouldFailOnReadbackError,
 } from './state-machine.ts';
 
-describe('shouldSnapshotFallback — only daily/weekly trigger snapshot path', () => {
+describe('shouldSnapshotFallback — every supported recurring type may snapshot', () => {
   test('daily order with 422 fully-invoiced → snapshot', () => {
     expect(shouldSnapshotFallback('daily')).toBe(true);
   });
@@ -20,12 +20,18 @@ describe('shouldSnapshotFallback — only daily/weekly trigger snapshot path', (
     expect(shouldSnapshotFallback('weekly')).toBe(true);
   });
 
-  test('monthly order with 422 fully-invoiced → NOT snapshot (treat as not_due)', () => {
-    expect(shouldSnapshotFallback('monthly')).toBe(false);
+  // BUG: monthly orders billed exactly once (first invoice via
+  // POST /kb_order/invoice), then every later occurrence hit 422 → not_due and
+  // was silently skipped forever. isOrderDue + the (order_id, billing_period)
+  // dedup already gate this path, so the snapshot is safe for monthly too.
+  test('monthly order with 422 fully-invoiced → snapshot (was silently skipped)', () => {
+    expect(shouldSnapshotFallback('monthly')).toBe(true);
   });
 
-  test('yearly order with 422 fully-invoiced → NOT snapshot', () => {
-    expect(shouldSnapshotFallback('yearly')).toBe(false);
+  // Quarterly / semi-annual arrive as bexio type 'monthly' (interval 3/6), so
+  // 'monthly' covers them. 'yearly' is its own bexio type.
+  test('yearly order with 422 fully-invoiced → snapshot', () => {
+    expect(shouldSnapshotFallback('yearly')).toBe(true);
   });
 
   test('unknown / undefined type → NOT snapshot (fail-closed)', () => {

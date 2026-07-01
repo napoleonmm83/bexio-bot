@@ -93,15 +93,30 @@ function isFullyInvoicedOrderError(err: BexioApiError): boolean {
 }
 
 /**
- * Snapshot fallback is ONLY safe for daily / weekly recurring orders. For
- * monthly+ orders, bexio's 422 "order is fully invoiced" means "not yet due
- * this period" — snapshotting would create a non-due invoice (money loss /
- * overbilling). For daily / weekly the snapshot path is correct because the
- * order's positions are exhausted by the first invoice and bexio rejects every
- * subsequent same-period call.
+ * On a 422 "order is fully invoiced", fall back to a snapshot invoice for EVERY
+ * supported recurring type. bexio's POST /kb_order/{id}/invoice succeeds exactly
+ * once — after the first invoice the order's positions are exhausted and every
+ * later call returns 422 — so without a fallback an order bills only once.
+ *
+ * This used to be gated to daily/weekly only, on the assumption that a 422 on a
+ * monthly+ order meant "not yet due this period" and snapshotting would overbill.
+ * That was wrong: it silently skipped every occurrence after the first, so
+ * monthly / quarterly / semi-annual / yearly orders (bexio type 'monthly' with
+ * interval 1/3/6, or 'yearly') billed exactly ONCE and then never again.
+ *
+ * The overbilling fear is already handled upstream: by the time this runs,
+ * processOrder has gated on isOrderDue (only a genuinely-due occurrence gets
+ * here, added 2026-05-30) AND won the (order_id, billing_period) claim (dedup:
+ * one invoice per occurrence). So a snapshot can only ever fire for a due,
+ * not-yet-billed period. Fail-closed on unknown/unsupported types.
  */
 export function shouldSnapshotFallback(repetitionType: string | undefined): boolean {
-  return repetitionType === 'daily' || repetitionType === 'weekly';
+  return (
+    repetitionType === 'daily' ||
+    repetitionType === 'weekly' ||
+    repetitionType === 'monthly' ||
+    repetitionType === 'yearly'
+  );
 }
 
 export type ClaimResult =
@@ -260,7 +275,7 @@ export async function processOrder(
     if (err instanceof BexioApiError) {
       if (isFullyInvoicedOrderError(err)) {
         if (!shouldSnapshotFallback(repetitionType)) {
-          console.log(`${ctx} 422 fully-invoiced on ${repetitionType ?? 'unknown'} order — treating as not_due (snapshot only allowed for daily/weekly)`);
+          console.log(`${ctx} 422 fully-invoiced on unsupported type "${repetitionType ?? 'unknown'}" — treating as not_due (no snapshot fallback)`);
           await deleteClaim(db, order.bexioOrderId, billingPeriod);
           return {
             kind: 'not_due',
