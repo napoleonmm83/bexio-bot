@@ -83,6 +83,31 @@ export function isAnotherRunInFlight(inFlightStartedAt: Date | null, now: number
   return now - inFlightStartedAt.getTime() < staleMs;
 }
 
+export type BillingAnomaly = { orderId: number; customerName: string; reason: string };
+
+/**
+ * Post-run reconciliation: find enabled orders that were DUE this run but did NOT
+ * end in a successful billing outcome — so a due-but-unbilled order can never pass
+ * as a silent success ("Lauf erfolgreich, 0 Fehler"). An anomaly is either a
+ * `failed` result or a `not_due` that carries `wasDue` (a bexio error swallowed
+ * after the due-gate already passed). sent / created_unsent / skipped_duplicate
+ * are billed-or-already-billed; genuine not_due (not scheduled) and
+ * skipped_unsupported (surfaced separately) are not anomalies. Pure → unit-tested.
+ */
+export function collectBillingAnomalies(
+  results: Array<{ orderId: number; customerName: string; result: ProcessOrderResult }>,
+): BillingAnomaly[] {
+  const anomalies: BillingAnomaly[] = [];
+  for (const r of results) {
+    if (r.result.kind === 'failed') {
+      anomalies.push({ orderId: r.orderId, customerName: r.customerName, reason: `Rechnung fehlgeschlagen: ${r.result.reason}` });
+    } else if (r.result.kind === 'not_due' && r.result.wasDue === true) {
+      anomalies.push({ orderId: r.orderId, customerName: r.customerName, reason: `fällig, aber nicht fakturiert: ${r.result.reason}` });
+    }
+  }
+  return anomalies;
+}
+
 function buildSkippedSummary(runId: number, startedAt: Date, finishedAt: Date): RunSummary {
   return {
     runId,
@@ -210,6 +235,16 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
         stage: `processOrder(${o.bexioOrderId})`,
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  }
+
+  // ── 5a. Billing reconciliation ──────────────────────────────
+  // A due order that failed or was silently swallowed as not_due must NOT let the
+  // run read "erfolgreich, 0 Fehler". Surface each as a run error → bot_runs
+  // errors_jsonb + Discord. (Skipped in dry-run: results are all synthetic not_due.)
+  if (!options.dryRun) {
+    for (const a of collectBillingAnomalies(results)) {
+      errors.push({ stage: `billing-anomaly(order ${a.orderId})`, message: `${a.customerName}: ${a.reason}` });
     }
   }
 

@@ -53,7 +53,11 @@ export type ProcessOrderConfig = MailConfig & { dueWindowDays: number; autoSend:
 export type ProcessOrderResult =
   | { kind: 'sent'; invoiceId: number; amount: string; billingPeriod: string }
   | { kind: 'created_unsent'; invoiceId: number; amount: string; billingPeriod: string }
-  | { kind: 'not_due'; reason: string }
+  // wasDue=true marks a not_due that happened even though the order WAS due this
+  // run (a bexio error was swallowed) — as opposed to the order genuinely not
+  // being scheduled. The run-level reconciliation (collectBillingAnomalies)
+  // alerts on the former so a due-but-unbilled order can't pass silently.
+  | { kind: 'not_due'; reason: string; wasDue?: boolean }
   | { kind: 'skipped_duplicate'; existingInvoiceId: number; billingPeriod: string }
   | { kind: 'skipped_unsupported'; bexioType: string }
   | { kind: 'failed'; reason: string; bexioStatus?: number; invoiceId?: number };
@@ -293,6 +297,7 @@ export async function processOrder(
           await deleteClaim(db, order.bexioOrderId, billingPeriod);
           return {
             kind: 'not_due',
+            wasDue: true,
             reason: `422 order-exhausted on unsupported type "${repetitionType ?? 'unknown'}" (no snapshot fallback)`,
           };
         }
@@ -372,7 +377,11 @@ export async function processOrder(
         if (err.errorClass === 'permanent') {
           console.log(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice → ${err.status} permanent (treated as not_due): ${err.body.slice(0, 300)}`);
           await deleteClaim(db, order.bexioOrderId, billingPeriod);
-          return { kind: 'not_due', reason: err.body.slice(0, 200) };
+          // Was due + claimed, but bexio refused with a permanent 4xx we don't
+          // specifically handle → surface it (wasDue) so the reconciliation
+          // alerts instead of it passing as a benign not_due. (This is the
+          // catch-all that would have caught the "no valid positions" 422.)
+          return { kind: 'not_due', reason: err.body.slice(0, 200), wasDue: true };
         }
         console.error(`${ctx} POST /kb_order/${order.bexioOrderId}/invoice FAILED status=${err.status} class=${err.errorClass} body=${err.body}`);
       }
