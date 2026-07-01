@@ -278,20 +278,27 @@ export type CreateInvoiceInput = {
   positions: BexioInvoicePositionInput[];
 };
 
-export type BexioInvoicePositionInput = {
-  /** Position type. For article-based: 'KbPositionArticle'. */
-  type: 'KbPositionArticle' | 'KbPositionCustom';
-  article_id?: number; // required when type='KbPositionArticle'
-  account_id?: number | null;
-  unit_id?: number | null;
-  unit_name?: string | null;
-  amount: string; // qty as decimal string
-  unit_price?: string; // optional override; if omitted bexio uses the article's sale_price
-  tax_id?: number | null;
-  tax_value?: string | null;
-  text?: string; // optional custom description
-  discount_in_percent?: string | null;
-};
+export type BexioInvoicePositionInput =
+  | {
+      /** Chargeable line. For article-based: 'KbPositionArticle'. */
+      type: 'KbPositionArticle' | 'KbPositionCustom';
+      article_id?: number; // required when type='KbPositionArticle'
+      account_id?: number | null;
+      unit_id?: number | null;
+      unit_name?: string | null;
+      amount: string; // qty as decimal string
+      unit_price?: string; // optional override; if omitted bexio uses the article's sale_price
+      tax_id?: number | null;
+      tax_value?: string | null;
+      text?: string; // optional custom description
+      discount_in_percent?: string | null;
+    }
+  | {
+      /** Text-only heading/description line (no amount, no tax). Copied verbatim
+       *  from the source order so a snapshot invoice keeps the order's layout. */
+      type: 'KbPositionText';
+      text: string;
+    };
 
 // ─── HTTP errors ──────────────────────────────────────────
 

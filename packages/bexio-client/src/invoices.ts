@@ -84,7 +84,13 @@ export function buildCreateInvoiceInputFromOrder(
     .map(mapOrderPositionToInvoicePosition)
     .filter((p): p is BexioInvoicePositionInput => p !== null);
 
-  if (positions.length === 0) {
+  // Require at least one CHARGEABLE line (text-only lines carry no amount) so a
+  // snapshot never produces a zero/empty invoice — the downstream zero-amount
+  // guard would refuse it anyway, but fail here with a clearer message.
+  const chargeable = positions.filter(
+    (p) => p.type === 'KbPositionCustom' || p.type === 'KbPositionArticle',
+  );
+  if (chargeable.length === 0) {
     throw new Error(`Order ${order.document_nr} has no invoiceable positions`);
   }
 
@@ -107,6 +113,12 @@ export function buildCreateInvoiceInputFromOrder(
 function mapOrderPositionToInvoicePosition(
   position: BexioOrderPosition,
 ): BexioInvoicePositionInput | null {
+  // Text-only heading/description line — copy verbatim so the snapshot invoice
+  // keeps the order's layout. bexio POST /kb_invoice accepts { type, text }.
+  if (position.type === 'KbPositionText') {
+    return { type: 'KbPositionText', text: position.text ?? '' };
+  }
+  // Other structural types (subtotal, page break, subposition) are not copied.
   if (position.type !== 'KbPositionCustom' && position.type !== 'KbPositionArticle') {
     return null;
   }
