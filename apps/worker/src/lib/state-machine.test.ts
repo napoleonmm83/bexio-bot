@@ -119,8 +119,8 @@ describe('dry-run safety — crash recovery must not touch the DB or send (BUG-1
   });
 
   test('reconcileStuckPreSendRows in dry-run returns zeros without DB access', async () => {
-    const result = await reconcileStuckPreSendRows(guardDb, 'fake-token', true);
-    expect(result).toEqual({ reclaimed: 0, resumed: 0, leftDraft: 0 });
+    const result = await reconcileStuckPreSendRows(guardDb, 'fake-token', true, true);
+    expect(result).toEqual({ reclaimed: 0, resumed: 0, leftDraft: 0, alertedDrafts: [] });
   });
 });
 
@@ -149,32 +149,36 @@ describe('classifyStuckPreSendRow — crash-recovery decision for stale creating
   // invoice_id, so every future run reads it as concurrent-in-flight and the
   // order silently never bills that period again. Reclaim (delete) → re-bill.
   test('creating + no invoice_id → reclaim (delete stale claim, re-bill)', () => {
-    expect(classifyStuckPreSendRow({ status: 'creating', invoiceId: null })).toBe('reclaim');
+    expect(classifyStuckPreSendRow({ status: 'creating', invoiceId: null, autoSend: true })).toBe('reclaim');
+    expect(classifyStuckPreSendRow({ status: 'creating', invoiceId: null, autoSend: false })).toBe('reclaim');
   });
 
   // 'issuing' is only reached past the auto_send gate, and once an invoice is
   // festgeschrieben it must complete to sent — a customer is owed delivery. Resume
-  // regardless of the current auto_send (mirrors retryIssuedRows, which never
-  // checks auto_send).
-  test('issuing + invoice_id → resume', () => {
-    expect(classifyStuckPreSendRow({ status: 'issuing', invoiceId: 42 })).toBe('resume');
+  // regardless of the current auto_send (mirrors retryIssuedRows).
+  test('issuing + invoice_id → resume (regardless of auto_send)', () => {
+    expect(classifyStuckPreSendRow({ status: 'issuing', invoiceId: 42, autoSend: true })).toBe('resume');
+    expect(classifyStuckPreSendRow({ status: 'issuing', invoiceId: 42, autoSend: false })).toBe('resume');
   });
 
-  // 'created' is a REVERSIBLE draft and a stable resting state — processOrder
-  // explicitly leaves it un-sent when auto_send is off, and recovery must never
-  // auto-send it. Otherwise flipping auto_send OFF→ON would festschreiben + mail
-  // every parked draft. A crash-created 'created' draft (rare) is left as a draft
-  // for manual handling; it never wedges (interpretClaimResult reads it as duplicate).
-  test('created + invoice_id → leave (reversible draft, never auto-sent by recovery)', () => {
-    expect(classifyStuckPreSendRow({ status: 'created', invoiceId: 42 })).toBe('leave');
+  // 'created' is a REVERSIBLE draft and a stable resting state — recovery must
+  // NEVER auto-send it (an auto_send OFF→ON flip would then festschreiben+mail
+  // every parked draft). But with auto_send ON, a stale 'created' row means a
+  // crash between the create and issue writes → the occurrence was never sent, so
+  // ALERT (B2/B1). With auto_send OFF it is an intentional parked draft → leave.
+  test('created + invoice_id + auto_send on → alert (crash-created, never sent)', () => {
+    expect(classifyStuckPreSendRow({ status: 'created', invoiceId: 42, autoSend: true })).toBe('alert');
+  });
+  test('created + invoice_id + auto_send off → leave (intentional parked draft)', () => {
+    expect(classifyStuckPreSendRow({ status: 'created', invoiceId: 42, autoSend: false })).toBe('leave');
   });
 
   // Defensive: combinations the invariant forbids (invoice_id is set exactly at
   // the 'created' transition) must never take a destructive action.
-  test('impossible combinations → leave (never delete a row we might lose track of)', () => {
-    expect(classifyStuckPreSendRow({ status: 'creating', invoiceId: 42 })).toBe('leave');
-    expect(classifyStuckPreSendRow({ status: 'issuing', invoiceId: null })).toBe('leave');
-    expect(classifyStuckPreSendRow({ status: 'sent', invoiceId: 42 })).toBe('leave');
+  test('impossible combinations → leave (never delete/act on a row we can not reason about)', () => {
+    expect(classifyStuckPreSendRow({ status: 'creating', invoiceId: 42, autoSend: true })).toBe('leave');
+    expect(classifyStuckPreSendRow({ status: 'issuing', invoiceId: null, autoSend: true })).toBe('leave');
+    expect(classifyStuckPreSendRow({ status: 'sent', invoiceId: 42, autoSend: true })).toBe('leave');
   });
 });
 

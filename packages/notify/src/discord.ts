@@ -274,16 +274,20 @@ function buildNewOrdersEmbed(
   };
 }
 
-function pickStatus(r: DiscordRunReport): 'success' | 'failed' | 'partial' | 'no-due' {
-  if (r.errors.length > 0 && r.results.length === 0 && r.subscriptionResults.length === 0) return 'failed';
+export function pickStatus(r: DiscordRunReport): 'success' | 'failed' | 'partial' | 'no-due' {
+  // B2: run-level errors[] (a thrown processOrder or a crash-recovery reclaim land
+  // in errors[] but NOT in results[]) must escalate the headline. Previously errors
+  // only mattered when results was empty, so a run with a real error but any sent
+  // order was mis-headlined green "Lauf erfolgreich".
+  const hasErrors = r.errors.length > 0;
   const failed =
     r.results.filter((x) => x.kind === 'failed').length +
     r.subscriptionResults.filter((x) => x.kind === 'failed').length;
   const sent =
     r.results.filter((x) => x.kind === 'sent' || x.kind === 'created_unsent' || x.kind === 'skipped_duplicate').length +
     r.subscriptionResults.filter((x) => x.kind === 'sent' || x.kind === 'skipped_duplicate').length;
-  if (failed > 0 && sent > 0) return 'partial';
-  if (failed > 0) return 'failed';
+  if ((failed > 0 || hasErrors) && sent > 0) return 'partial';
+  if (failed > 0 || hasErrors) return 'failed';
   if (sent > 0) return 'success';
   return 'no-due';
 }

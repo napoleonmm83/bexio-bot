@@ -384,9 +384,21 @@ export async function processOrder(
     }
     if (!invoice) {
       await deleteClaim(db, order.bexioOrderId, billingPeriod);
+      // B3: a transient error (lost response / 20s timeout) may have arrived AFTER
+      // bexio already committed the order-path invoice. That invoice has no
+      // api_reference, so the next run's snapshot fallback can't find it — it stays
+      // an un-issued/un-sent orphan draft (NOT a double-send: this path never
+      // reached issue/send). Flag it as a cleanup hint so the stray draft is
+      // actionable rather than mysterious. (We deliberately do NOT auto-adopt it by
+      // content search — a contact+date match could grab an unrelated invoice and
+      // send the wrong one.)
+      const isTransient = err instanceof BexioApiError && err.errorClass === 'transient';
+      const orphanHint = isTransient
+        ? ' — NOTE: the response was lost mid-flight; bexio may have created an un-sent draft for this order. Check the order in bexio and delete any stray un-sent draft.'
+        : '';
       return {
         kind: 'failed',
-        reason: err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 800)}` : String(err),
+        reason: (err instanceof BexioApiError ? `${err.errorClass}: ${err.body.slice(0, 800)}` : String(err)) + orphanHint,
         bexioStatus: err instanceof BexioApiError ? err.status : undefined,
       };
     }
@@ -723,7 +735,7 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
   return { reconciledSent, reconciledAssumedSent, reconciledIssued, reconciledFailed };
 }
 
-export type StuckPreSendDecision = 'reclaim' | 'resume' | 'leave';
+export type StuckPreSendDecision = 'reclaim' | 'resume' | 'alert' | 'leave';
 
 /**
  * Decide what to do with a stale pre-send row (status 'creating' / 'issuing')
@@ -740,31 +752,35 @@ export type StuckPreSendDecision = 'reclaim' | 'resume' | 'leave';
  *            back into the 'issued' send lane. 'issuing' is only reached past the
  *            auto_send gate, and a committed invoice must complete regardless of
  *            the CURRENT auto_send (mirrors retryIssuedRows).
- * - leave:   everything else. 'created' is a REVERSIBLE draft and a stable resting
- *            state — processOrder deliberately parks it un-sent when auto_send is
- *            off, so recovery must NEVER auto-send it (else flipping auto_send
- *            OFF→ON would festschreiben + mail every parked draft). A rare
- *            crash-created 'created' draft is left for manual handling; it never
- *            wedges (interpretClaimResult reads invoice_id-set rows as duplicate).
- *            Invariant-violating combinations (invoice_id is set exactly at the
- *            'created' transition) are also left — never act on a row we can't
- *            reason about.
+ * - alert:   a stale 'created' row WITH auto_send currently ON. 'created' is a
+ *            REVERSIBLE draft and recovery must NEVER auto-send it (else an
+ *            auto_send OFF→ON flip would festschreiben + mail every parked draft).
+ *            But with auto_send on, a stale 'created' row means a crash between the
+ *            create and issue writes → the occurrence was never sent and no stage
+ *            recovers it (it reads as skipped_duplicate next run). So surface it as
+ *            a run error for manual handling — alert only, no side-effect.
+ * - leave:   everything else. 'created' with auto_send OFF is an intentional parked
+ *            draft (created_unsent) → leave silently. Invariant-violating
+ *            combinations (invoice_id is set exactly at the 'created' transition)
+ *            are also left — never act on a row we can't reason about.
  */
 export function classifyStuckPreSendRow(input: {
   status: string;
   invoiceId: number | null;
+  autoSend: boolean;
 }): StuckPreSendDecision {
-  const { status, invoiceId } = input;
+  const { status, invoiceId, autoSend } = input;
   if (status === 'creating') return invoiceId == null ? 'reclaim' : 'leave';
-  if (status === 'issuing' && invoiceId != null) return 'resume';
+  if (invoiceId == null) return 'leave'; // created/issuing must carry an invoice_id
+  if (status === 'issuing') return 'resume';
+  if (status === 'created') return autoSend ? 'alert' : 'leave';
   return 'leave';
 }
 
 /**
- * Crash recovery for rows wedged in a stale pre-send state ('creating',
+ * Crash recovery for rows wedged in a stale pre-send state ('creating', 'created',
  * 'issuing') — states between the claim and 'issued' that neither
  * reconcileInFlightSends ('sending') nor retryIssuedRows ('issued') covers.
- * ('created' is intentionally NOT recovered — see classifyStuckPreSendRow.)
  *
  * Staleness is `updated_at < now()-5min` (these states never set lock_acquired_at,
  * and updated_at is written on the claim insert and every transition). The cutoff
@@ -774,28 +790,39 @@ export function classifyStuckPreSendRow(input: {
  *
  * Run this BEFORE retryIssuedRows: 'resume' produces 'issued' rows that
  * retryIssuedRows then sends (inheriting its already-sent guard + attempt limit).
+ * 'created' rows are never auto-sent — with auto_send on they are surfaced as
+ * `alertedDrafts` (crash between create and issue); with it off they are left as
+ * intentional parked drafts.
  */
 export async function reconcileStuckPreSendRows(
   db: Db,
   accessToken: string,
+  autoSend: boolean,
   dryRun = false,
-): Promise<{ reclaimed: number; resumed: number; leftDraft: number }> {
+): Promise<{
+  reclaimed: number;
+  resumed: number;
+  leftDraft: number;
+  /** Stale 'created' drafts (auto_send on) never issued/sent — surface for manual handling (B1). */
+  alertedDrafts: Array<{ orderId: number; billingPeriod: string; invoiceId: number | null }>;
+}> {
   // Reclaim/resume mutate rows and issue real invoices — a dry-run must skip the
   // whole stage before any side-effect (BUG-1 parity).
   if (dryRun) {
-    return { reclaimed: 0, resumed: 0, leftDraft: 0 };
+    return { reclaimed: 0, resumed: 0, leftDraft: 0, alertedDrafts: [] };
   }
 
   const cutoff = new Date(Date.now() - LOCK_STALE_MS);
 
-  // Only 'creating'/'issuing' — matches the idx_invoice_runs_status_lock partial
-  // index and skips intentional 'created' drafts entirely.
+  // 'creating'/'issuing' are the recoverable states (also in the
+  // idx_invoice_runs_status_lock partial index); 'created' is scanned only to
+  // detect/alert crash-created drafts (never auto-sent).
   const stuck = await db
     .select()
     .from(invoiceRuns)
     .where(
       and(
-        inArray(invoiceRuns.status, ['creating', 'issuing']),
+        inArray(invoiceRuns.status, ['creating', 'created', 'issuing']),
         lt(invoiceRuns.updatedAt, cutoff),
       ),
     );
@@ -803,15 +830,29 @@ export async function reconcileStuckPreSendRows(
   let reclaimed = 0;
   let resumed = 0;
   let leftDraft = 0;
+  const alertedDrafts: Array<{ orderId: number; billingPeriod: string; invoiceId: number | null }> = [];
 
   for (const row of stuck) {
     const decision = classifyStuckPreSendRow({
       status: row.status,
       invoiceId: row.invoiceId,
+      autoSend,
     });
 
     if (decision === 'leave') {
       leftDraft += 1;
+      continue;
+    }
+
+    if (decision === 'alert') {
+      // A crash left a bexio draft created but never issued/sent (auto_send on).
+      // No stage recovers a 'created' row and the next run reads it as
+      // skipped_duplicate — surface it (run.ts pushes a run error) so the missed
+      // occurrence is not silent. No side-effect here.
+      console.warn(
+        `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] stale 'created' draft (invoice ${row.invoiceId}) — auto-send is on but this occurrence was never issued/sent; verify and send manually in bexio`,
+      );
+      alertedDrafts.push({ orderId: row.orderId, billingPeriod: row.billingPeriod, invoiceId: row.invoiceId });
       continue;
     }
 
@@ -857,7 +898,7 @@ export async function reconcileStuckPreSendRows(
     resumed += 1;
   }
 
-  return { reclaimed, resumed, leftDraft };
+  return { reclaimed, resumed, leftDraft, alertedDrafts };
 }
 
 /**

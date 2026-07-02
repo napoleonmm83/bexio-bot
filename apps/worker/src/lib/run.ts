@@ -223,7 +223,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   const reconcile = await reconcileInFlightSends(db, accessToken, options.dryRun);
   // Pre-send recovery MUST run before retryIssuedRows: a 'resume' produces an
   // 'issued' row that retryIssuedRows then sends (inheriting its send-once guard).
-  const preSend = await reconcileStuckPreSendRows(db, accessToken, options.dryRun);
+  const preSend = await reconcileStuckPreSendRows(db, accessToken, settings.autoSend, options.dryRun);
   // A reclaimed 'creating' claim means an occurrence was mid-billing at crash. The
   // due-gate never back-bills, so if the occurrence has since advanced (any daily
   // order, or a monthly past its catch-up window) that period is dropped with no
@@ -234,6 +234,15 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     errors.push({
       stage: 'crash-recovery',
       message: `${preSend.reclaimed} stale 'creating' claim(s) reclaimed — a billing period may have been dropped without back-billing; check the worker logs and verify the affected order(s) in bexio`,
+    });
+  }
+  // B1: a crash between the 'created' and 'issuing' writes (auto_send on) leaves a
+  // bexio draft that no stage recovers and that reads as skipped_duplicate next
+  // run → a silently unbilled occurrence. Surface each so it isn't a silent miss.
+  for (const d of preSend.alertedDrafts) {
+    errors.push({
+      stage: 'crash-recovery',
+      message: `order ${d.orderId} period ${d.billingPeriod}: bexio draft ${d.invoiceId ?? '?'} was created but never issued/sent (auto-send on) — verify and send it manually in bexio`,
     });
   }
   const retriedFromIssued = await retryIssuedRows(db, accessToken, settings, options.dryRun);

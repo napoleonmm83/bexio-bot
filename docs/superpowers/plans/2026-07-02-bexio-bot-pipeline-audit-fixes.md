@@ -55,14 +55,17 @@ but any order sent (thrown processOrder + reclaim errors land in errors[] only).
 pickStatus, `hasErrors && sent>0 → 'partial'`, `hasErrors → 'failed'`. **Test:** pure — errors +
 one sent → 'partial'.
 
-### B3. Order-path create idempotency (double-bill on lost response)
-`packages/bexio-client/src/invoices.ts` + snapshot branch in `state-machine.ts`. A lost response
-after bexio commits the first order-path invoice → claim deleted → next run's snapshot fallback
-can't find the un-referenced orphan → duplicate invoice+email. **Fix:** in the snapshot branch,
-when `findInvoiceByApiReference` returns null, also search bexio for a recent un-sent invoice by
-`contact_id` + `is_valid_from=occurrenceDate`; adopt it (reusedUnsent) instead of creating.
-**Test:** transient create → deleteClaim; next run 422 → snapshot finds by contact+date, reuses
-(asserts no new snapshot created).
+### B3. Order-path create idempotency — REASSESSED (audit overstated as double-bill)
+`state-machine.ts`. On my own verification the audit's "double-bill + double-email" is WRONG: a
+transient create error (lost response / 20s timeout) routes to `deleteClaim` → `failed` at the
+catch-all (`if (!invoice)`), which NEVER reaches issue/send. So a bexio-committed order-path
+invoice (#100) stays an **un-issued/un-sent orphan draft**; the next run's snapshot creates+sends
+#101. The customer is emailed ONCE (#101); #100 is a stray draft. Real impact = a rare orphan
+draft, already surfaced as a `failed` anomaly — P3 cleanup, not a P2 double-bill.
+**Decision:** do NOT implement the proposed contact+date search-and-adopt — it fixes a non-problem
+and a content match could adopt an unrelated invoice and send the WRONG one. **Fix applied:** append
+a cleanup hint to the transient `failed` reason so the possible stray draft is actionable. No test
+(message-only change).
 
 ## Phase 3 — P3
 
