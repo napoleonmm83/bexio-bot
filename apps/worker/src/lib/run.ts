@@ -18,6 +18,7 @@ import { loadWorkerSettings } from './settings.ts';
 import {
   processOrder,
   reconcileInFlightSends,
+  reconcileStuckPreSendRows,
   retryIssuedRows,
   type ProcessOrderResult,
 } from './state-machine.ts';
@@ -41,6 +42,10 @@ export type RunSummary = {
   reconciledAssumedSent: number;
   reconciledIssued: number;
   reconciledFailed: number;
+  /** Stale 'creating' claims deleted so the order re-bills (possible orphan draft in bexio). */
+  reconciledReclaimed: number;
+  /** Stale 'created'/'issuing' rows re-issued and handed to the send lane. */
+  reconciledResumed: number;
   retriedFromIssued: number;
   enabledOrders: number;
   results: Array<{ orderId: number; customerName: string; result: ProcessOrderResult }>;
@@ -121,6 +126,8 @@ function buildSkippedSummary(runId: number, startedAt: Date, finishedAt: Date): 
     reconciledAssumedSent: 0,
     reconciledIssued: 0,
     reconciledFailed: 0,
+    reconciledReclaimed: 0,
+    reconciledResumed: 0,
     retriedFromIssued: 0,
     enabledOrders: 0,
     results: [],
@@ -205,6 +212,21 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   // dry-run gate below, so a "dry" run silently re-mailed any parked 'issued'
   // invoice. The dryRun flag short-circuits both before any side-effect.
   const reconcile = await reconcileInFlightSends(db, accessToken, options.dryRun);
+  // Pre-send recovery MUST run before retryIssuedRows: a 'resume' produces an
+  // 'issued' row that retryIssuedRows then sends (inheriting its send-once guard).
+  const preSend = await reconcileStuckPreSendRows(db, accessToken, options.dryRun);
+  // A reclaimed 'creating' claim means an occurrence was mid-billing at crash. The
+  // due-gate never back-bills, so if the occurrence has since advanced (any daily
+  // order, or a monthly past its catch-up window) that period is dropped with no
+  // new invoice — it must NOT pass as a silent success. Surface it → bot_runs
+  // errors_jsonb + Discord (per-order detail is in the container logs via warn).
+  // reclaimed is always 0 in dry-run, so this is inherently dry-run-safe.
+  if (preSend.reclaimed > 0) {
+    errors.push({
+      stage: 'crash-recovery',
+      message: `${preSend.reclaimed} stale 'creating' claim(s) reclaimed — a billing period may have been dropped without back-billing; check the worker logs and verify the affected order(s) in bexio`,
+    });
+  }
   const retriedFromIssued = await retryIssuedRows(db, accessToken, settings, options.dryRun);
 
   // ── 5. Process enabled orders ───────────────────────────────
@@ -332,6 +354,8 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     reconciledAssumedSent: reconcile.reconciledAssumedSent,
     reconciledIssued: reconcile.reconciledIssued,
     reconciledFailed: reconcile.reconciledFailed,
+    reconciledReclaimed: preSend.reclaimed,
+    reconciledResumed: preSend.resumed,
     retriedFromIssued,
     enabledOrders: enabled.length,
     results,

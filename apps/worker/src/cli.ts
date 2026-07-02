@@ -83,6 +83,12 @@ try {
     }
     console.log('  reconciled to issued:', summary.reconciledIssued);
     console.log('  marked failed:       ', summary.reconciledFailed);
+    if (summary.reconciledReclaimed > 0) {
+      console.log('  ⚠ reclaimed stale claim (check bexio for orphan draft):', summary.reconciledReclaimed);
+    }
+    if (summary.reconciledResumed > 0) {
+      console.log('  resumed stuck pre-send:', summary.reconciledResumed);
+    }
     console.log('  retried from issued: ', summary.retriedFromIssued);
     console.log('');
     console.log('Enabled orders:', summary.enabledOrders);

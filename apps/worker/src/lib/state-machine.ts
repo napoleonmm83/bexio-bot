@@ -18,7 +18,7 @@
 // Crash recovery: rows with status='sending' AND lock_acquired_at < now()-5min
 // are reconciled via GET /kb_invoice/{id} — see reconcileInFlightSends().
 
-import { and, eq, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { invoiceRuns, recurringOrders } from '@bexio-bot/db';
 import {
@@ -86,10 +86,6 @@ function isoDateInZurich(d: Date): string {
   const day = parts.find((p) => p.type === 'day')?.value;
   if (!year || !month || !day) throw new Error('Could not format Zurich date');
   return `${year}-${month}-${day}`;
-}
-
-function todayIsoInZurich(): string {
-  return isoDateInZurich(new Date());
 }
 
 /**
@@ -170,8 +166,6 @@ export async function processOrder(
   order: OrderInput,
   config: ProcessOrderConfig,
 ): Promise<ProcessOrderResult> {
-  const invoiceDate = todayIsoInZurich();
-
   // Step 0: fetch repetition — REQUIRED for billing-period granularity. We
   // retry once before giving up. Silent fallback to monthly is unsafe because
   // a later successful fetch would use a different period key for the same
@@ -232,7 +226,7 @@ export async function processOrder(
   // catch-up window would get is_valid_from=today, and the post-create period
   // reconciliation (below) would migrate its key off the schedule.
   const occurrenceDate = isoDateInZurich(dueOccurrence);
-  let billingPeriod = formatBillingPeriod(occurrenceIso, repetitionType);
+  const billingPeriod = formatBillingPeriod(occurrenceIso, repetitionType);
   // Stable prefix on every log line — pipe Coolify logs through `grep "[order=N"`
   // to follow one order's full pipeline. Keep prefix short; the orchestrator's
   // summary already shows the customer name.
@@ -402,24 +396,19 @@ export async function processOrder(
     return { kind: 'failed', reason: 'invoice creation returned no invoice' };
   }
 
-  // Bexio call succeeded — reconcile period key from invoice.is_valid_from
-  // (N-2). bexio may set a different date than today (e.g., schedule shift),
-  // and the period it logically belongs to is the one derived from that date.
-  const invoiceValidFrom = invoice.is_valid_from ?? invoiceDate;
-  const truePeriod = formatBillingPeriod(invoiceValidFrom, repetitionType);
-  if (truePeriod !== billingPeriod) {
-    console.log(`${ctx} migrating period key ${billingPeriod} → ${truePeriod} (from invoice is_valid_from=${invoiceValidFrom})`);
-    await db
-      .update(invoiceRuns)
-      .set({ billingPeriod: truePeriod, invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
-      .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
-    billingPeriod = truePeriod;
-  } else {
-    await db
-      .update(invoiceRuns)
-      .set({ invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
-      .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
-  }
+  // Bexio call succeeded. The invoice_runs (order_id, billing_period) PK is the
+  // dedup key and MUST stay anchored to the OCCURRENCE (from isOrderDue), NEVER
+  // migrated to bexio's invoice.is_valid_from. The old N-2 migration did exactly
+  // that: for a monthly/yearly FIRST invoice (order path) whose is_valid_from
+  // bexio set to a later period, it rewrote the key (e.g. 2026-06 → 2026-07),
+  // freeing the occurrence key — so a later run inside the catch-up window
+  // recomputed 2026-06, found no row, and billed the SAME occurrence again →
+  // duplicate invoice + email. is_valid_from is a bexio display detail only; the
+  // schedule-anchored key is authoritative for dedup. (Finding 1, 2026-07-02)
+  await db
+    .update(invoiceRuns)
+    .set({ invoiceId: invoice.id, status: 'created', updatedAt: new Date() })
+    .where(and(eq(invoiceRuns.orderId, order.bexioOrderId), eq(invoiceRuns.billingPeriod, billingPeriod)));
 
   // EDGE-3: refuse a zero/non-positive invoice before any issue/send side effect.
   // bexio already returned the total. Keep the claim row as 'failed' (markFailed,
@@ -732,6 +721,143 @@ export async function reconcileInFlightSends(db: Db, accessToken: string, dryRun
   }
 
   return { reconciledSent, reconciledAssumedSent, reconciledIssued, reconciledFailed };
+}
+
+export type StuckPreSendDecision = 'reclaim' | 'resume' | 'leave';
+
+/**
+ * Decide what to do with a stale pre-send row (status 'creating' / 'issuing')
+ * during crash recovery. Pure → unit-tested. These states sit BEFORE
+ * 'issued'/'sending' and no other recovery stage touches them, so a crash mid-
+ * pipeline wedges them (see reconcileStuckPreSendRows).
+ *
+ * - reclaim: a 'creating' row with no invoice_id — the claim was won but the
+ *            bexio create never recorded an id. interpretClaimResult reads such a
+ *            row as concurrent-in-flight forever, so the order silently never
+ *            re-bills. Delete the claim so processOrder re-bills.
+ * - resume:  an 'issuing' row WITH an invoice_id — the invoice may be
+ *            festgeschrieben-but-unsent, so a customer is owed delivery. Route it
+ *            back into the 'issued' send lane. 'issuing' is only reached past the
+ *            auto_send gate, and a committed invoice must complete regardless of
+ *            the CURRENT auto_send (mirrors retryIssuedRows).
+ * - leave:   everything else. 'created' is a REVERSIBLE draft and a stable resting
+ *            state — processOrder deliberately parks it un-sent when auto_send is
+ *            off, so recovery must NEVER auto-send it (else flipping auto_send
+ *            OFF→ON would festschreiben + mail every parked draft). A rare
+ *            crash-created 'created' draft is left for manual handling; it never
+ *            wedges (interpretClaimResult reads invoice_id-set rows as duplicate).
+ *            Invariant-violating combinations (invoice_id is set exactly at the
+ *            'created' transition) are also left — never act on a row we can't
+ *            reason about.
+ */
+export function classifyStuckPreSendRow(input: {
+  status: string;
+  invoiceId: number | null;
+}): StuckPreSendDecision {
+  const { status, invoiceId } = input;
+  if (status === 'creating') return invoiceId == null ? 'reclaim' : 'leave';
+  if (status === 'issuing' && invoiceId != null) return 'resume';
+  return 'leave';
+}
+
+/**
+ * Crash recovery for rows wedged in a stale pre-send state ('creating',
+ * 'issuing') — states between the claim and 'issued' that neither
+ * reconcileInFlightSends ('sending') nor retryIssuedRows ('issued') covers.
+ * ('created' is intentionally NOT recovered — see classifyStuckPreSendRow.)
+ *
+ * Staleness is `updated_at < now()-5min` (these states never set lock_acquired_at,
+ * and updated_at is written on the claim insert and every transition). The cutoff
+ * guarantees the current run's own in-progress rows are never touched; the
+ * advisory-lock + in-flight guard already prevent a concurrent run, so a stale
+ * pre-send row is always a crashed prior run.
+ *
+ * Run this BEFORE retryIssuedRows: 'resume' produces 'issued' rows that
+ * retryIssuedRows then sends (inheriting its already-sent guard + attempt limit).
+ */
+export async function reconcileStuckPreSendRows(
+  db: Db,
+  accessToken: string,
+  dryRun = false,
+): Promise<{ reclaimed: number; resumed: number; leftDraft: number }> {
+  // Reclaim/resume mutate rows and issue real invoices — a dry-run must skip the
+  // whole stage before any side-effect (BUG-1 parity).
+  if (dryRun) {
+    return { reclaimed: 0, resumed: 0, leftDraft: 0 };
+  }
+
+  const cutoff = new Date(Date.now() - LOCK_STALE_MS);
+
+  // Only 'creating'/'issuing' — matches the idx_invoice_runs_status_lock partial
+  // index and skips intentional 'created' drafts entirely.
+  const stuck = await db
+    .select()
+    .from(invoiceRuns)
+    .where(
+      and(
+        inArray(invoiceRuns.status, ['creating', 'issuing']),
+        lt(invoiceRuns.updatedAt, cutoff),
+      ),
+    );
+
+  let reclaimed = 0;
+  let resumed = 0;
+  let leftDraft = 0;
+
+  for (const row of stuck) {
+    const decision = classifyStuckPreSendRow({
+      status: row.status,
+      invoiceId: row.invoiceId,
+    });
+
+    if (decision === 'leave') {
+      leftDraft += 1;
+      continue;
+    }
+
+    if (decision === 'reclaim') {
+      // bexio MAY hold an un-issued draft from the order path (no api_reference →
+      // not lookupable), but it was never issued/sent, so deleting the claim and
+      // letting this run's processOrder re-bill cannot double-send. Log the
+      // possible stray draft for manual cleanup.
+      console.warn(
+        `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] stale 'creating' claim — deleting so the order re-bills; any bexio draft created pre-crash is un-issued/un-sent and needs manual cleanup`,
+      );
+      await deleteClaim(db, row.orderId, row.billingPeriod);
+      reclaimed += 1;
+      continue;
+    }
+
+    // decision === 'resume' — invoice_id guaranteed non-null by classify.
+    try {
+      await issueInvoice(accessToken, row.invoiceId!);
+    } catch (err) {
+      if (err instanceof BexioApiError) {
+        // Likely already festgeschrieben (crash after issue succeeded, before the
+        // DB 'issued' write). Mirror processOrder's reusedUnsent tolerance and
+        // proceed. If it truly wasn't issued, retryIssuedRows self-corrects to
+        // 'failed' at the attempt limit — no wedge, no double-send.
+        console.warn(
+          `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] issue on stale '${row.status}' invoice ${row.invoiceId} errored (${err.status}) — assuming already issued, handing to retry`,
+        );
+      } else {
+        // Transient/unexpected — leave the row untouched for the next run's
+        // reconciler to retry (EDGE-4 parity).
+        console.warn(
+          `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] transient issue failure — leaving '${row.status}' for next run: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        leftDraft += 1;
+        continue;
+      }
+    }
+    await transitionTo(db, row.orderId, row.billingPeriod, 'issued', {
+      issuedAt: new Date(),
+      lockAcquiredAt: null,
+    });
+    resumed += 1;
+  }
+
+  return { reclaimed, resumed, leftDraft };
 }
 
 /**
