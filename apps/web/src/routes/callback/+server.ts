@@ -1,6 +1,7 @@
 import { redirect, error } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { exchangeCode } from '$lib/server/bexio-oauth.ts';
+import { getCompanyProfile, isAllowedBexioCompany } from '@bexio-bot/bexio-client';
 import { getDb, secrets } from '@bexio-bot/db';
 import type { RequestHandler } from './$types.ts';
 
@@ -39,6 +40,29 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
     clientId: BEXIO_CLIENT_ID,
     clientSecret: BEXIO_CLIENT_SECRET,
   });
+
+  // OAuth rebind guard (SEC): state+PKCE only stop CSRF, not an attacker running
+  // their OWN bexio OAuth end-to-end against this public callback and clobbering
+  // the shared token rows. When BEXIO_ALLOWED_COMPANY is configured, verify the
+  // connecting org matches before storing tokens. Fail-open (no check) when unset
+  // so re-auth is never locked out before the allowlist is configured.
+  const allowed = env.BEXIO_ALLOWED_COMPANY;
+  if (allowed) {
+    let profile = null;
+    try {
+      profile = await getCompanyProfile(tokens.access_token);
+    } catch (e) {
+      console.error('[callback] could not fetch company_profile to verify the connecting org:', e);
+      error(502, 'Could not verify the bexio organization — try again.');
+    }
+    if (!isAllowedBexioCompany(profile, allowed)) {
+      console.error(
+        `[callback] REJECTED OAuth bind: connecting org ${profile ? `"${profile.name}" (id=${profile.id}, mwst=${profile.mwst_nr ?? '-'})` : 'unknown'} is not on the allowlist — tokens NOT stored`,
+      );
+      error(403, 'This bexio organization is not authorized to connect this bot.');
+    }
+    console.log(`[callback] bexio org authorized: "${profile?.name}" (id=${profile?.id})`);
+  }
 
   const db = getDb();
   const expiresAt = new Date(Date.now() + tokens.expires_in * 1000);

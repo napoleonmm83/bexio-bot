@@ -873,12 +873,16 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
     return 0;
   }
 
+  // Claim atomically (status='sending' + lock) so concurrent workers can't grab
+  // the same rows (N-4). Do NOT bump attempts here: attempts must equal REAL send
+  // attempts, so a crash mid-loop (before a given row's send) leaves it at its
+  // pre-claim attempts and is reconciled as 'retry', not falsely 'assumed-sent'
+  // (BUG-2 parity — attempts is bumped per-row right before sendInvoice below).
   const claimed = await db
     .update(invoiceRuns)
     .set({
       status: 'sending',
       lockAcquiredAt: new Date(),
-      attempts: sql`${invoiceRuns.attempts} + 1`,
       updatedAt: new Date(),
     })
     .where(and(eq(invoiceRuns.status, 'issued'), lt(invoiceRuns.attempts, MAX_ATTEMPTS)))
@@ -920,6 +924,13 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
         continue;
       }
       const docNr = live.document_nr;
+      // BUG-2 parity: bump attempts IMMEDIATELY before the send network call, not
+      // at claim. A crash after this point (attempts>0) is reconciled as
+      // assumed-sent; a crash before it (attempts unchanged) is reconciled as retry.
+      await db
+        .update(invoiceRuns)
+        .set({ attempts: sql`${invoiceRuns.attempts} + 1`, updatedAt: new Date() })
+        .where(and(eq(invoiceRuns.orderId, row.orderId), eq(invoiceRuns.billingPeriod, row.billingPeriod)));
       await sendInvoice(accessToken, row.invoiceId, {
         recipientEmail: order.customerEmail,
         subject: renderTemplate(config.mailSubject, { document_nr: docNr }),
@@ -932,9 +943,9 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
       });
       recovered += 1;
     } catch (err) {
-      // We already bumped attempts during the claim. Roll back to 'issued' so
-      // future runs can try again, unless this attempt was the last.
-      if (row.attempts != null && row.attempts >= MAX_ATTEMPTS) {
+      // Roll back to 'issued' so future runs can retry, unless the attempt just
+      // made (row.attempts from the claim is the PRE-bump value) was the last one.
+      if (row.attempts != null && row.attempts + 1 >= MAX_ATTEMPTS) {
         await markFailed(db, row.orderId, row.billingPeriod, err);
       } else {
         const errorJsonb =

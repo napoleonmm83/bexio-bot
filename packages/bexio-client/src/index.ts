@@ -12,6 +12,7 @@ export {
   type OrderSearchCriterion,
 } from './orders.ts';
 export { getContact, listContacts } from './contacts.ts';
+export { getCompanyProfile, isAllowedBexioCompany, type BexioCompanyProfile } from './company.ts';
 export { listArticles, getArticle } from './articles.ts';
 export {
   createInvoiceFromOrder,

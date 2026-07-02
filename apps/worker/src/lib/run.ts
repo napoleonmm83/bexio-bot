@@ -14,7 +14,7 @@ import { botRuns } from '@bexio-bot/db';
 import { getValidAccessToken } from '@bexio-bot/bexio-client';
 import { notifyAll, type ChannelResult } from '@bexio-bot/notify';
 import { syncRecurringOrders, getEnabledOrders, getProcessableOrderById } from './sync.ts';
-import { loadWorkerSettings } from './settings.ts';
+import { loadWorkerSettings, type WorkerSettings } from './settings.ts';
 import {
   processOrder,
   reconcileInFlightSends,
@@ -195,10 +195,19 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
   }
 
   // ── 2. Token + runtime settings + Sync ──────────────────────
+  // Stages 2–7 run inside a try/catch (closes at the catch before the function
+  // end). ANY throw here — a revoked/expired bexio token in getValidAccessToken,
+  // a DB/bexio blip in a reconcile stage, the row-close, etc. — would otherwise
+  // skip the bot_runs close AND notifyAll, leaving an open row with no errorsJsonb
+  // and NO Discord alert: a silent multi-day billing outage (the cron/CLI path
+  // has no equivalent of the trigger-run .catch). On failure we close the row,
+  // alert, and rethrow so cli.ts keeps exitCode=1. (audit A3, 2026-07-02)
+  let settings: WorkerSettings | undefined;
+  try {
   // Settings resolve DB (app_settings) → env → default. Loaded once and
   // threaded into the pipeline so a /settings change applies next run.
   const accessToken = await getValidAccessToken(db);
-  const settings = await loadWorkerSettings(db);
+  settings = await loadWorkerSettings(db);
   const sync = await syncRecurringOrders(db, accessToken, { dryRun: options.dryRun });
   // EDGE-2: orders skipped mid-sync surface as run errors (→ bot_runs + Discord)
   // instead of silently vanishing.
@@ -365,4 +374,53 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     errors,
     notifyResults,
   };
+  } catch (err) {
+    // A stage threw before the run could close cleanly. Record it, close the
+    // bot_runs row with errorsJsonb, alert Discord, then rethrow (exitCode=1).
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('runDaily: unrecoverable error — closing run as failed:', message);
+    errors.push({ stage: 'runDaily', message });
+    const finishedAt = new Date();
+    // settings may be null if the failure was in getValidAccessToken (before the
+    // load). loadWorkerSettings only needs the DB, so try to get the real webhook.
+    if (!settings) {
+      try {
+        settings = await loadWorkerSettings(db);
+      } catch (e) {
+        console.error('runDaily: could not load settings for the failure alert:', e);
+      }
+    }
+    try {
+      await db
+        .update(botRuns)
+        .set({ finishedAt, errorsJsonb: sql`${JSON.stringify(errors)}::jsonb` })
+        .where(eq(botRuns.id, runId));
+    } catch (dbErr) {
+      console.error('runDaily: failed to close bot_runs row after error:', dbErr);
+    }
+    try {
+      await notifyAll(
+        {
+          runId,
+          startedAt,
+          finishedAt,
+          enabledOrders: 0,
+          newOrders: [],
+          driftWarnings: [],
+          unsupportedOrders: [],
+          errors,
+          results: [],
+          subscriptionResults: [],
+        },
+        {
+          enabled: settings?.notificationsEnabled ?? true,
+          discordWebhookUrl: settings?.discordWebhookUrl,
+          dashboardUrl: settings?.dashboardUrl,
+        },
+      );
+    } catch (notifyErr) {
+      console.error('runDaily: failure notification ALSO failed:', notifyErr);
+    }
+    throw err;
+  }
 }
