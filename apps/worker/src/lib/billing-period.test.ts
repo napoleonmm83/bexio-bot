@@ -43,28 +43,25 @@ describe('formatBillingPeriod — daily', () => {
   });
 });
 
-describe('formatBillingPeriod — weekly (ISO week)', () => {
-  test('first Monday of 2026 → 2026-W01', () => {
-    // 2026-01-05 is Monday of ISO week 2 actually — let me anchor on a Thursday
-    // 2026-01-01 is a Thursday → ISO week 1 of 2026
-    expect(formatBillingPeriod('2026-01-01', 'weekly')).toBe('2026-W01');
+describe('formatBillingPeriod — weekly (occurrence-anchored DAY, not ISO week) [C1]', () => {
+  // ISO-week granularity collided for weekly orders configured with 2+ weekdays:
+  // Monday and Thursday of the same ISO week mapped to one 'YYYY-Www' key, so the
+  // (order_id, billing_period) guard deduped the second occurrence away → the order
+  // billed once/week instead of per configured weekday. Day granularity (same as
+  // daily) gives each configured weekday its own slot; a single-weekday weekly
+  // order still yields exactly one key per occurrence (the key is occurrence-anchored).
+  test('two weekdays in the SAME ISO week now get DIFFERENT keys (the fix)', () => {
+    expect(formatBillingPeriod('2026-06-29', 'weekly')).toBe('2026-06-29'); // Monday
+    expect(formatBillingPeriod('2026-07-02', 'weekly')).toBe('2026-07-02'); // Thursday, same week
+    expect(formatBillingPeriod('2026-06-29', 'weekly')).not.toBe(formatBillingPeriod('2026-07-02', 'weekly'));
   });
 
-  test('year-end where week belongs to next year: 2025-12-29 (Mon) is W01 of 2026', () => {
-    // ISO rule: week 1 contains year's first Thursday. 2026-01-01 is Thu,
-    // so the week starting Mon 2025-12-29 IS ISO week 1 of 2026.
-    expect(formatBillingPeriod('2025-12-29', 'weekly')).toBe('2026-W01');
+  test('single weekday → one key per occurrence', () => {
+    expect(formatBillingPeriod('2026-05-22', 'weekly')).toBe('2026-05-22');
   });
 
-  test('year-end where week belongs to prior year: 2027-01-03 (Sun) is W53 of 2026', () => {
-    // 2026 starts on Thursday → year has 53 ISO weeks. 2027-01-01 is Friday,
-    // so Sun 2027-01-03 still belongs to W53 of 2026.
-    expect(formatBillingPeriod('2027-01-03', 'weekly')).toBe('2026-W53');
-  });
-
-  test('mid-year week is zero-padded', () => {
-    // 2026-05-22 is Friday of ISO week 21
-    expect(formatBillingPeriod('2026-05-22', 'weekly')).toBe('2026-W21');
+  test('zero-pads single-digit month/day', () => {
+    expect(formatBillingPeriod('2026-01-05', 'weekly')).toBe('2026-01-05');
   });
 });
 
