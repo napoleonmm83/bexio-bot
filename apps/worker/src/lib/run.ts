@@ -360,6 +360,29 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     dashboardUrl: settings.dashboardUrl,
   });
 
+  // C4: Discord is the only proactive channel. If every attempted delivery failed
+  // (outage / 429 / rotated webhook), a failed run would ping nobody AND leave no
+  // durable trace. Persist it to bot_runs.errorsJsonb so the dashboard shows the
+  // missed alert. (Empty notifyResults = notifications disabled or no webhook →
+  // not a delivery failure.)
+  if (notifyResults.length > 0 && notifyResults.every((n) => !n.ok)) {
+    const detail = notifyResults
+      .map((n) => (n.ok ? '' : `${n.channel}${n.status ? ` (${n.status})` : ''}: ${n.error}`))
+      .filter(Boolean)
+      .join('; ');
+    const msg = `alert delivery failed on all channels — ${detail}`;
+    console.error(`runDaily: ${msg}`);
+    errors.push({ stage: 'notify', message: msg });
+    try {
+      await db
+        .update(botRuns)
+        .set({ errorsJsonb: sql`${JSON.stringify(errors)}::jsonb` })
+        .where(eq(botRuns.id, runId));
+    } catch (e) {
+      console.error('runDaily: failed to persist notify-failure to bot_runs:', e);
+    }
+  }
+
   return {
     runId,
     startedAt,

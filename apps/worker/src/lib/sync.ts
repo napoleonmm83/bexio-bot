@@ -373,7 +373,7 @@ export async function importOrderById(
       customerEmail: row.customerEmail,
       interval: row.interval,
       intervalMultiplier: row.intervalMultiplier,
-      expectedAmount: order.total,
+      expectedAmount: coerceExpectedAmount(order.total),
       nextBillingDate: row.nextBillingDate,
       enabled,
       bexioStatus: row.bexioStatus,
@@ -387,7 +387,7 @@ export async function importOrderById(
         customerEmail: row.customerEmail,
         interval: row.interval,
         intervalMultiplier: row.intervalMultiplier,
-        expectedAmount: order.total,
+        expectedAmount: coerceExpectedAmount(order.total),
         ...(row.repetitionFetchOk ? { nextBillingDate: row.nextBillingDate } : {}),
         // Explicit user action: force the enabled state (unlike sync).
         enabled,

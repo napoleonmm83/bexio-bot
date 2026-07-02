@@ -136,13 +136,18 @@ export function shouldSnapshotFallback(repetitionType: string | undefined): bool
 export type ClaimResult =
   | { kind: 'own' }
   | { kind: 'duplicate'; existingInvoiceId: number; billingPeriod: string }
+  | { kind: 'duplicate-failed'; existingInvoiceId: number; billingPeriod: string }
   | { kind: 'concurrent-in-flight' };
 
 /**
  * Interpret the result of an INSERT-with-ON-CONFLICT claim attempt:
  *   - inserted has rows → we won the claim, slot is ours
- *   - inserted empty + existing has invoice_id → another run already finished this slot (real duplicate)
- *   - inserted empty + existing has no invoice_id → another run is mid-flight on this slot (concurrent)
+ *   - inserted empty + existing has invoice_id, status='failed' → a PRIOR attempt
+ *     failed leaving an un-issued bexio draft; markFailed keeps invoice_id, so a
+ *     plain 'duplicate' would silence it after one alert. Distinguish it (C2) so
+ *     processOrder re-surfaces it as a billing anomaly every run until resolved.
+ *   - inserted empty + existing has invoice_id (other status) → already finished (duplicate)
+ *   - inserted empty + existing has no invoice_id → another run is mid-flight (concurrent)
  */
 export function interpretClaimResult(
   inserted: Array<{ orderId: number; status: string; invoiceId: number | null }>,
@@ -150,7 +155,10 @@ export function interpretClaimResult(
 ): ClaimResult {
   if (inserted.length > 0) return { kind: 'own' };
   if (existing?.invoiceId != null) {
-    return { kind: 'duplicate', existingInvoiceId: existing.invoiceId, billingPeriod: existing.billingPeriod };
+    const base = { existingInvoiceId: existing.invoiceId, billingPeriod: existing.billingPeriod };
+    return existing.status === 'failed'
+      ? { kind: 'duplicate-failed', ...base }
+      : { kind: 'duplicate', ...base };
   }
   return { kind: 'concurrent-in-flight' };
 }
@@ -260,6 +268,18 @@ export async function processOrder(
 
   const claim = interpretClaimResult(claimInsert, existingRow);
 
+  if (claim.kind === 'duplicate-failed') {
+    // A prior attempt for this occurrence failed, leaving an un-issued/un-sent
+    // bexio draft (invoice_id set, status='failed'). Plain skipped_duplicate would
+    // hide it forever after the first alert; re-surface it (wasDue) so the
+    // reconciliation flags it every run until Marcus resolves it in bexio. (C2)
+    console.log(`${ctx} prior attempt failed — invoice ${claim.existingInvoiceId} left un-issued/un-sent; re-surfacing as anomaly`);
+    return {
+      kind: 'not_due',
+      wasDue: true,
+      reason: `previous attempt failed; bexio invoice ${claim.existingInvoiceId} is an un-issued draft — resolve it manually in bexio`,
+    };
+  }
   if (claim.kind === 'duplicate') {
     console.log(`${ctx} duplicate guard hit — existing invoice ${claim.existingInvoiceId}`);
     return {

@@ -93,6 +93,25 @@ describe('interpretClaimResult — claim-row race interpretation', () => {
     );
     expect(result.kind).toBe('concurrent-in-flight');
   });
+
+  // C2: a prior attempt that reached 'failed' still has its invoice_id set
+  // (markFailed doesn't clear it). Plain 'duplicate' would silence it forever after
+  // the first alert; distinguish it so processOrder re-surfaces it as an anomaly.
+  test('existing row has invoice_id but status=failed → duplicate-failed (keep flagging)', () => {
+    const result = interpretClaimResult(
+      [],
+      { orderId: 13, invoiceId: 234, billingPeriod: '2026-05', status: 'failed' },
+    );
+    expect(result).toEqual({ kind: 'duplicate-failed', existingInvoiceId: 234, billingPeriod: '2026-05' });
+  });
+
+  test('existing row has invoice_id and a non-failed status → plain duplicate', () => {
+    const result = interpretClaimResult(
+      [],
+      { orderId: 13, invoiceId: 234, billingPeriod: '2026-05', status: 'sent' },
+    );
+    expect(result.kind).toBe('duplicate');
+  });
 });
 
 describe('dry-run safety — crash recovery must not touch the DB or send (BUG-1)', () => {
