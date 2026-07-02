@@ -36,6 +36,10 @@ describe('isAllowedBexioCompany — OAuth rebind guard', () => {
     expect(isAllowedBexioCompany(null, 'martini digital')).toBe(false);
   });
 
+  test('company_profile.id is NOT a candidate (not globally unique — id=1 for every account)', () => {
+    expect(isAllowedBexioCompany(profile({ id: 1 }), '1')).toBe(false);
+  });
+
   test('does not match on empty/blank profile fields', () => {
     // allowlist set to empty-ish must not accidentally match a blank field
     expect(isAllowedBexioCompany(profile({ mwst_nr: '', ust_id_nr: '' }), 'CHE-000')).toBe(false);

@@ -76,6 +76,21 @@ key → second occurrence deduped away (under-bill). **Fix:** weekly returns `YY
 `invoice_runs` has zero weekly rows (and no active weekly orders) BEFORE applying.** **Test:** Mon
 and Thu same week → different keys; single-weekday still one key per occurrence.
 
+**Migration & rollback (CR #1).** The change is on branch `fix/audit-c1-weekly-key`, NOT on main.
+Deploy order:
+1. **Pre-check (blocking):** `SELECT count(*) FROM invoice_runs WHERE billing_period LIKE '%-W%'`
+   and `SELECT count(*) FROM recurring_orders WHERE interval='weekly'` — BOTH must be `0`.
+2. **If both 0** (expected — prod is daily/monthly only): merge → deploy BOTH apps. No data
+   migration needed; no old-format key exists to strand. Rollback = `git revert` + redeploy; safe
+   because no `YYYY-MM-DD` weekly row will have been written unless a weekly order was billed
+   post-deploy (and then a revert would re-collide only that order — still no double-send, just the
+   original under-bill behaviour).
+3. **If either is non-zero** (unexpected): do NOT ship this as-is — a leftover `YYYY-Www` row would
+   be re-billed. Options: (a) one-off SQL migration rewriting existing `YYYY-Www` keys to the
+   occurrence day BEFORE deploy, or (b) a dual-read guard (accept either key format for one release)
+   then drop the ISO-week reader once no `-W` rows remain. Given no weekly usage is expected, (a)/(b)
+   are documented fallbacks, not built.
+
 ### C2. Re-surface a `failed` row instead of silent `skipped_duplicate`
 `apps/worker/src/lib/state-machine.ts` (duplicate branch). A `failed` row with invoiceId reads as
 `skipped_duplicate` on later runs → alerts once then silent. **Fix:** in the duplicate branch, if

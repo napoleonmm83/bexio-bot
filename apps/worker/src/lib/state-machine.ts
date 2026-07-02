@@ -893,7 +893,12 @@ export async function reconcileStuckPreSendRows(
     try {
       await issueInvoice(accessToken, row.invoiceId!);
     } catch (err) {
-      if (err instanceof BexioApiError) {
+      // A TRANSIENT error (5xx / rate-limit / network) is NOT "already issued" —
+      // leave the row untouched so the next run's reconciler retries, exactly like
+      // reconcileInFlightSends's EDGE-4 transient handling. Only a non-transient
+      // BexioApiError is treated as already-festgeschrieben.
+      const isTransient = err instanceof BexioApiError && err.errorClass === 'transient';
+      if (err instanceof BexioApiError && !isTransient) {
         // Likely already festgeschrieben (crash after issue succeeded, before the
         // DB 'issued' write). Mirror processOrder's reusedUnsent tolerance and
         // proceed. If it truly wasn't issued, retryIssuedRows self-corrects to
@@ -902,10 +907,10 @@ export async function reconcileStuckPreSendRows(
           `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] issue on stale '${row.status}' invoice ${row.invoiceId} errored (${err.status}) — assuming already issued, handing to retry`,
         );
       } else {
-        // Transient/unexpected — leave the row untouched for the next run's
-        // reconciler to retry (EDGE-4 parity).
+        // Transient BexioApiError or an unexpected non-BexioApiError — leave for
+        // the next run to retry.
         console.warn(
-          `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] transient issue failure — leaving '${row.status}' for next run: ${err instanceof Error ? err.message : String(err)}`,
+          `[reconcile-presend order=${row.orderId} period=${row.billingPeriod}] transient/unexpected issue failure — leaving '${row.status}' for next run: ${err instanceof Error ? err.message : String(err)}`,
         );
         leftDraft += 1;
         continue;
@@ -967,6 +972,9 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
       continue;
     }
 
+    // Tracks whether we got past the attempts-bump into the real send. A failure
+    // BEFORE this (a getInvoice readback failure) must NOT count as a send attempt.
+    let sendAttempted = false;
     try {
       const live = await getInvoice(accessToken, row.invoiceId);
       // BUG-3: a row can land back in 'issued' via the F-2 rollback AFTER
@@ -992,6 +1000,7 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
         .update(invoiceRuns)
         .set({ attempts: sql`${invoiceRuns.attempts} + 1`, updatedAt: new Date() })
         .where(and(eq(invoiceRuns.orderId, row.orderId), eq(invoiceRuns.billingPeriod, row.billingPeriod)));
+      sendAttempted = true;
       await sendInvoice(accessToken, row.invoiceId, {
         recipientEmail: order.customerEmail,
         subject: renderTemplate(config.mailSubject, { document_nr: docNr }),
@@ -1004,9 +1013,16 @@ export async function retryIssuedRows(db: Db, accessToken: string, config: MailC
       });
       recovered += 1;
     } catch (err) {
-      // Roll back to 'issued' so future runs can retry, unless the attempt just
-      // made (row.attempts from the claim is the PRE-bump value) was the last one.
-      if (row.attempts != null && row.attempts + 1 >= MAX_ATTEMPTS) {
+      // attempts reflects REAL send attempts: the DB bump ran only if we reached
+      // the send (sendAttempted). A pre-send readback failure must NOT count as a
+      // send attempt (else a transient bexio blip on getInvoice would burn an
+      // attempt and could terminally fail a row that never even tried to send).
+      // Terminal only when the send is genuinely exhausted, OR the invoice is gone
+      // in bexio (404 readback — EDGE-4 parity); everything else rolls back to
+      // 'issued' to retry next run.
+      const attemptsNow = (row.attempts ?? 0) + (sendAttempted ? 1 : 0);
+      const invoiceGone = !sendAttempted && shouldFailOnReadbackError(err);
+      if (invoiceGone || (sendAttempted && attemptsNow >= MAX_ATTEMPTS)) {
         await markFailed(db, row.orderId, row.billingPeriod, err);
       } else {
         const errorJsonb =

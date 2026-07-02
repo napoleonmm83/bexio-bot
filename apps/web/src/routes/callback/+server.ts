@@ -48,7 +48,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
   // so re-auth is never locked out before the allowlist is configured.
   const allowed = env.BEXIO_ALLOWED_COMPANY;
   if (allowed) {
-    let profile = null;
+    let profile: Awaited<ReturnType<typeof getCompanyProfile>> = null;
     try {
       profile = await getCompanyProfile(tokens.access_token);
     } catch (e) {
@@ -56,8 +56,9 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
       error(502, 'Could not verify the bexio organization — try again.');
     }
     if (!isAllowedBexioCompany(profile, allowed)) {
+      // Do NOT log tax IDs (mwst_nr) — keep name+id for traceability only.
       console.error(
-        `[callback] REJECTED OAuth bind: connecting org ${profile ? `"${profile.name}" (id=${profile.id}, mwst=${profile.mwst_nr ?? '-'})` : 'unknown'} is not on the allowlist — tokens NOT stored`,
+        `[callback] REJECTED OAuth bind: connecting org ${profile ? `"${profile.name}" (id=${profile.id})` : 'unknown'} is not on the allowlist — tokens NOT stored`,
       );
       error(403, 'This bexio organization is not authorized to connect this bot.');
     }

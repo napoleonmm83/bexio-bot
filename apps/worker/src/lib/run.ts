@@ -431,7 +431,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
       console.error('runDaily: failed to close bot_runs row after error:', dbErr);
     }
     try {
-      await notifyAll(
+      const notifyResults = await notifyAll(
         {
           runId,
           startedAt,
@@ -450,6 +450,20 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
           dashboardUrl: settings?.dashboardUrl,
         },
       );
+      // C4 parity on the failure path: if the failure-alert itself couldn't be
+      // delivered on any channel, record that in the row so the missed ping is
+      // visible on the dashboard (the errorsJsonb was already persisted above).
+      if (notifyResults.length > 0 && notifyResults.every((n) => !n.ok)) {
+        const detail = notifyResults
+          .map((n) => (n.ok ? '' : `${n.channel}${n.status ? ` (${n.status})` : ''}: ${n.error}`))
+          .filter(Boolean)
+          .join('; ');
+        errors.push({ stage: 'notify', message: `failure alert delivery failed on all channels — ${detail}` });
+        await db
+          .update(botRuns)
+          .set({ errorsJsonb: sql`${JSON.stringify(errors)}::jsonb` })
+          .where(eq(botRuns.id, runId));
+      }
     } catch (notifyErr) {
       console.error('runDaily: failure notification ALSO failed:', notifyErr);
     }

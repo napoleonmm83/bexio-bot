@@ -8,7 +8,7 @@
 
 The `invoice_runs` state machine is:
 
-```
+```text
 creating → created → issuing → issued → sending → sent (terminal)
    ↓          ↓         ↓          all errors → failed (terminal)
 ```

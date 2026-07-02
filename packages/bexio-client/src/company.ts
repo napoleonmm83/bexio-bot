@@ -26,9 +26,11 @@ export async function getCompanyProfile(accessToken: string): Promise<BexioCompa
  *
  * Fail-OPEN when `allowed` is empty/unset so re-auth is never locked out before
  * the allowlist is configured; once set, a mismatch (or an org that could not be
- * identified) is rejected. Match is case-insensitive/trimmed against id, name,
- * mail, and both VAT fields. NOTE company_profile.id is NOT globally unique (each
- * account's profile is id=1) — prefer the VAT number for a real guard.
+ * identified) is rejected. Match is case-insensitive/trimmed against the VAT
+ * numbers (mwst_nr / ust_id_nr — strongest, globally unique, recommended), and
+ * name / mail as weaker convenience fallbacks. company_profile.id is deliberately
+ * NOT a candidate: it is NOT globally unique (every account's profile is id=1), so
+ * matching on it would let any org pass. Prefer setting the VAT number.
  */
 export function isAllowedBexioCompany(
   profile: BexioCompanyProfile | null,
@@ -37,7 +39,7 @@ export function isAllowedBexioCompany(
   const want = (allowed ?? '').trim().toLowerCase();
   if (!want) return true; // fail-open: allowlist not configured yet
   if (!profile) return false; // configured, but the org could not be identified
-  const candidates = [String(profile.id), profile.name, profile.mail, profile.mwst_nr, profile.ust_id_nr]
+  const candidates = [profile.mwst_nr, profile.ust_id_nr, profile.name, profile.mail]
     .filter((v): v is string => typeof v === 'string' && v.trim() !== '')
     .map((v) => v.trim().toLowerCase());
   return candidates.includes(want);

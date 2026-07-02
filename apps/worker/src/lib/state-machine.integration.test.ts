@@ -114,4 +114,33 @@ describe('retryIssuedRows — attempts counts REAL sends, not batch-claim (A1)',
     expect(sendCalls.length).toBe(1);
     expect(sendCalls[0]).toBeGreaterThan(bumpIdx);
   });
+
+  // CR #2: a getInvoice readback failure happens BEFORE the send/bump, so it must
+  // not count as a send attempt — even at attempts=MAX-1 it should roll back to
+  // 'issued', never markFailed, and never call sendInvoice.
+  test('transient readback failure at attempts=MAX-1 rolls back to issued, not failed', async () => {
+    const { retryIssuedRows } = await import('./state-machine.ts');
+    stub.getInvoice = (async () => { throw new bexio.BexioApiError(500, 'transient', 'bexio down'); }) as AnyFn;
+    let sendCalled = false;
+    stub.sendInvoice = (async () => { sendCalled = true; }) as AnyFn;
+
+    const setPayloads: Array<Record<string, unknown>> = [];
+    const db = {
+      update: () => ({
+        set: (payload: Record<string, unknown>) => ({
+          where: () => ({
+            returning: async () => [{ orderId: 5, billingPeriod: '2026-07', status: 'sending', invoiceId: 500, attempts: 2 }],
+            then: (res: (v: unknown) => void) => { setPayloads.push(payload); res(undefined); },
+          }),
+        }),
+      }),
+      select: () => ({ from: () => ({ where: async () => [{ bexioOrderId: 5, customerEmail: 'k@example.ch' }] }) }),
+    } as never;
+
+    await retryIssuedRows(db, 'fake-token', { mailSubject: 's', mailMessage: 'm' }, false);
+
+    expect(sendCalled).toBe(false);
+    expect(setPayloads.some((p) => p.status === 'issued')).toBe(true);
+    expect(setPayloads.some((p) => p.status === 'failed')).toBe(false);
+  });
 });
