@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   billingMonthFor,
   dueDateFor,
+  findPositionByTitle,
   invoiceDateFor,
   normalizeTitle,
   planAdd,
@@ -121,6 +122,47 @@ test('review #3: guillemets, curly quotes, apostrophes and accents dedupe agains
     ['Caf&eacute; &amp; Co', 'Café & Co'],
   ];
   for (const [html, typed] of pairs) expect(normalizeTitle(html)).toBe(normalizeTitle(typed));
+});
+
+test('bug report §4: two spaces after the dash (bexio UI) equal one space (bot)', () => {
+  expect(normalizeTitle('<span>Video Beitrag TV Rheintal &mdash;&nbsp; Kuhrennen</span>')).toBe(
+    normalizeTitle('Video Beitrag TV Rheintal — Kuhrennen'),
+  );
+  expect(normalizeTitle('Video Beitrag TV Rheintal —  Kuhrennen')).toBe(normalizeTitle('Video Beitrag TV Rheintal — Kuhrennen'));
+});
+
+describe('findPositionByTitle (rename/remove address by the title the user sees)', () => {
+  const inv = (id: number, isDraft: boolean, texts: [number, string][]) => ({
+    id,
+    isDraft,
+    positions: texts.map(([pid, text]) => ({ id: pid, text })),
+  });
+  const re284 = inv(284, true, [
+    [534, '<span>Video Beitrag TV Rheintal &mdash;&nbsp; Heimmatb&uuml;hne Werdenberg</span>'],
+    [539, '<span>Video Beitrag TV Rheintal &mdash;&nbsp; Kuhrennen</span>'],
+    [540, 'Video Beitrag TV Rheintal — Heimatbühne Werdenberg'],
+  ]);
+
+  test('exactly one match → ref with invoice + position id', () => {
+    expect(findPositionByTitle([re284], 'Heimmatbühne Werdenberg')).toEqual({
+      kind: 'one',
+      ref: { invoiceId: 284, positionId: 534, text: re284.positions[0].text },
+    });
+  });
+  test('the full position text also matches', () => {
+    expect(findPositionByTitle([re284], 'Video Beitrag TV Rheintal — Kuhrennen')).toMatchObject({ kind: 'one' });
+  });
+  test('no match → none; a near miss is NOT a match', () => {
+    expect(findPositionByTitle([re284], 'Kuhrenen')).toEqual({ kind: 'none' });
+  });
+  test('two matches (duplicate rows) → many, never pick one', () => {
+    const dup = inv(300, true, [[1, 'Video Beitrag TV Rheintal — Kuhrennen']]);
+    expect(findPositionByTitle([re284, dup], 'Kuhrennen')).toMatchObject({ kind: 'many' });
+  });
+  test('positions on sent invoices are never touched', () => {
+    const sent = inv(250, false, [[9, 'Video Beitrag TV Rheintal — Alpabzug']]);
+    expect(findPositionByTitle([sent], 'Alpabzug')).toEqual({ kind: 'not_draft', invoiceId: 250 });
+  });
 });
 
 test('03.11. without any October invoice yet → create, and it is due', () => {

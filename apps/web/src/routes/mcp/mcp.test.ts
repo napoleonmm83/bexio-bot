@@ -32,9 +32,21 @@ describe('/mcp', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'tvr_add_beitrag',
       'tvr_billing_status',
-      'tvr_remove_position',
+      'tvr_remove_beitrag',
+      'tvr_rename_beitrag',
       'tvr_send_invoice',
     ]);
+    // Annotations per bug report §5C — no tool addresses a target by an internal id except send.
+    const ann = Object.fromEntries(
+      (tools as unknown as { name: string; annotations: Record<string, boolean> }[]).map((t) => [t.name, t.annotations]),
+    );
+    expect(ann.tvr_billing_status).toMatchObject({ readOnlyHint: true });
+    expect(ann.tvr_add_beitrag).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(ann.tvr_rename_beitrag).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(ann.tvr_remove_beitrag).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(ann.tvr_send_invoice).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    const remove = tools.find((t) => t.name === 'tvr_remove_beitrag')!;
+    expect(Object.keys(remove.inputSchema.properties).sort()).toEqual(['dry_run', 'title']);
     const send = tools.find((t) => t.name === 'tvr_send_invoice')!;
     expect(send.inputSchema.required?.sort()).toEqual(['confirm', 'invoice_id']);
     expect(send.inputSchema.properties.confirm).toMatchObject({ const: true });

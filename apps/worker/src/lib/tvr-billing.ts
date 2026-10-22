@@ -125,3 +125,35 @@ export function targetFor(completion: Ymd, invoices: TvrInvoice[]): { invoiceDat
 export function sendDueFor(inv: TvrInvoice, today: Ymd): boolean {
   return isSendWindow(today) && inv.isDraft && inv.invoiceDate === `${today.year}-${pad(today.month)}-01`;
 }
+
+export type PositionRef = { invoiceId: number; positionId: number; text: string };
+export type PositionLookup =
+  | { kind: 'one'; ref: PositionRef }
+  | { kind: 'none' }
+  | { kind: 'many'; refs: PositionRef[] }
+  | { kind: 'not_draft'; invoiceId: number };
+
+/**
+ * Find the position the user names by its title (as seen on the invoice) — the
+ * target comes from the user's words, never from an id in a tool answer.
+ * Accepts the bare title or the full position text. Only exact normalized matches.
+ */
+export function findPositionByTitle(
+  invoices: Array<{ id: number; isDraft: boolean; positions: Array<{ id: number; text: string | null }> }>,
+  title: string,
+): PositionLookup {
+  const wanted = new Set([normalizeTitle(positionText(title)), normalizeTitle(title)]);
+  const refs: Array<PositionRef & { isDraft: boolean }> = [];
+  for (const inv of invoices) {
+    for (const p of inv.positions) {
+      if (p.text && wanted.has(normalizeTitle(p.text))) {
+        refs.push({ invoiceId: inv.id, positionId: p.id, text: p.text, isDraft: inv.isDraft });
+      }
+    }
+  }
+  const drafts = refs.filter((r) => r.isDraft).map(({ isDraft: _, ...r }) => r);
+  if (drafts.length === 1) return { kind: 'one', ref: drafts[0] };
+  if (drafts.length > 1) return { kind: 'many', refs: drafts };
+  if (refs.length > 0) return { kind: 'not_draft', invoiceId: refs[0].invoiceId };
+  return { kind: 'none' };
+}

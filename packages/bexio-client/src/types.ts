@@ -243,6 +243,8 @@ export type BexioInvoicePosition = {
   id: number;
   type: string; // 'KbPositionCustom' | 'KbPositionArticle' | 'KbPositionText' | …
   text: string | null;
+  /** Display order as in the bexio UI ("1", "2", …). */
+  pos?: string;
   amount?: string;
   unit_price?: string;
   position_total?: string;

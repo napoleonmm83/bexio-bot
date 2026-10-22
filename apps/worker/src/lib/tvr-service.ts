@@ -1,6 +1,6 @@
 // TV-Rheintal billing — I/O layer around the pure rules in tvr-billing.ts.
 // Called by the MCP endpoint (apps/web/src/routes/mcp). Every tool function
-// (tvrStatus/tvrAdd/tvrSend/tvrRemovePosition) writes one audit row to tvr_tool_calls;
+// (tvrStatus/tvrAdd/tvrSend/tvrRename/tvrRemoveBeitrag) writes one audit row to tvr_tool_calls;
 // tvrPendingReminder (runDaily) does not.
 
 import { sql } from 'drizzle-orm';
@@ -9,6 +9,7 @@ import {
   addCustomPosition,
   createInvoice,
   deleteCustomPosition,
+  editCustomPosition,
   getContact,
   getInvoice,
   getValidAccessToken,
@@ -24,7 +25,9 @@ import { loadWorkerSettings } from './settings.ts';
 import { renderTemplate } from './state-machine.ts';
 import {
   dueDateFor,
+  findPositionByTitle,
   htmlToText,
+  normalizeTitle,
   planAdd,
   positionText,
   sendDueFor,
@@ -136,9 +139,9 @@ function summarize(inv: BexioInvoice, today: Ymd) {
     invoice_status: inv.kb_item_status_id === BEXIO_STATUS_DRAFT ? 'draft' : `status_${inv.kb_item_status_id}`,
     invoice_date: isoDate(inv.is_valid_from),
     due_date: isoDate(inv.is_valid_to),
-    positions: positions.map((p) => ({
-      position_id: p.id,
-      text: htmlToText(p.text ?? '').replace(/ /g, ' ').trim(),
+    positions: positions.map((p, i) => ({
+      pos: Number(p.pos) || i + 1, // display number as in the bexio UI
+      text: plainText(p.text),
       amount: p.position_total,
     })),
     position_count: positions.length,
@@ -343,20 +346,77 @@ export async function tvrSend(db: Db, input: { invoice_id: number; confirm: bool
   });
 }
 
-export async function tvrRemovePosition(
+const plainText = (html: string | null) => htmlToText(html ?? '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+
+/** Resolve the ONE draft position the user named by title, or throw a user-readable error. */
+function resolveByTitle(recent: BexioInvoice[], title: string) {
+  const hit = findPositionByTitle(
+    recent.map((i) => ({ ...toTvr(i), positions: (i.positions ?? []).map((p) => ({ id: p.id, text: p.text })) })),
+    title,
+  );
+  if (hit.kind === 'none') throw new Error(`Keine Position «${title}» in einer TV-Rheintal-Entwurfsrechnung gefunden`);
+  if (hit.kind === 'many') {
+    throw new Error(`«${title}» steht ${hit.refs.length}× in Entwürfen — bitte in bexio bereinigen, der Bot wählt nicht aus`);
+  }
+  if (hit.kind === 'not_draft') throw new Error(`«${title}» steht nur auf einer bereits versendeten Rechnung — nicht änderbar`);
+  const inv = recent.find((i) => i.id === hit.ref.invoiceId)!;
+  const pos = (inv.positions ?? []).find((p) => p.id === hit.ref.positionId)!;
+  if (pos.type !== 'KbPositionCustom') throw new Error(`«${title}» ist keine Standardposition`);
+  return { inv, pos };
+}
+
+export async function tvrRename(
   db: Db,
-  input: { invoice_id: number; position_id: number },
+  input: { old_title: string; new_title: string; dry_run?: boolean },
   caller?: string,
 ) {
-  return audit(db, 'tvr_remove_position', caller, input, async () => {
+  return audit(db, 'tvr_rename_beitrag', caller, input, async () => {
+    const newTitle = input.new_title?.trim();
+    if (!input.old_title?.trim() || !newTitle) throw new Error('old_title und new_title sind Pflicht');
+    if (newTitle.length > 200) throw new Error('new_title too long (max 200)');
+    if (normalizeTitle(input.old_title) === normalizeTitle(newTitle)) throw new Error('Alter und neuer Titel sind gleich');
     const cfg = loadTvrConfig();
     const token = await getValidAccessToken(db);
-    const inv = await loadOwnDraft(token, cfg, input.invoice_id);
-    const pos = (inv.positions ?? []).find((p) => p.id === input.position_id);
-    if (!pos) throw new Error(`Position ${input.position_id} not found on ${inv.document_nr}`);
-    if (pos.type !== 'KbPositionCustom') throw new Error(`Position ${input.position_id} is not a custom position`);
-    await deleteCustomPosition(token, inv.id, pos.id);
-    const after = await getInvoice(token, inv.id);
-    return { status: 'removed', removed_text: htmlToText(pos.text ?? '').trim(), ...summarize(after, todayZurich()) };
+
+    return db.transaction(async (tx) => {
+      if (!input.dry_run) await tx.execute(sql`SELECT pg_advisory_xact_lock(${TVR_LOCK_KEY})`);
+      const today = todayZurich();
+      const recent = await loadRecent(token, cfg, today);
+      const { inv, pos } = resolveByTitle(recent, input.old_title);
+      // Same dedup scope as tvr_add_beitrag: the new title must not exist anywhere recent (any status).
+      const clash = findPositionByTitle(
+        recent.map((i) => ({ ...toTvr(i), positions: (i.positions ?? []).map((p) => ({ id: p.id, text: p.text })) })),
+        newTitle,
+      );
+      if (clash.kind !== 'none') throw new Error(`«${newTitle}» existiert bereits auf einer TV-Rheintal-Rechnung`);
+
+      const newText = positionText(newTitle);
+      if (input.dry_run) {
+        return { status: 'dry_run', old_text: plainText(pos.text), new_text: newText, ...summarize(inv, today) };
+      }
+      await editCustomPosition(token, inv.id, pos.id, { text: newText });
+      const after = await getInvoice(token, inv.id);
+      return { status: 'renamed', old_text: plainText(pos.text), new_text: newText, ...summarize(after, today) };
+    });
+  });
+}
+
+export async function tvrRemoveBeitrag(db: Db, input: { title: string; dry_run?: boolean }, caller?: string) {
+  return audit(db, 'tvr_remove_beitrag', caller, input, async () => {
+    if (!input.title?.trim()) throw new Error('title is required');
+    const cfg = loadTvrConfig();
+    const token = await getValidAccessToken(db);
+
+    return db.transaction(async (tx) => {
+      if (!input.dry_run) await tx.execute(sql`SELECT pg_advisory_xact_lock(${TVR_LOCK_KEY})`);
+      const today = todayZurich();
+      const recent = await loadRecent(token, cfg, today);
+      const { inv, pos } = resolveByTitle(recent, input.title);
+      const removed = { removed_text: plainText(pos.text), removed_amount: pos.position_total };
+      if (input.dry_run) return { status: 'dry_run', would: 'remove', ...removed, ...summarize(inv, today) };
+      await deleteCustomPosition(token, inv.id, pos.id);
+      const after = await getInvoice(token, inv.id);
+      return { status: 'removed', ...removed, ...summarize(after, today) };
+    });
   });
 }

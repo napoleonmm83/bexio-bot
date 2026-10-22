@@ -12,7 +12,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { z } from 'zod';
 import type { RequestHandler } from './$types.ts';
 import { getDb } from '@bexio-bot/db';
-import { tvrAdd, tvrRemovePosition, tvrSend, tvrStatus } from '@bexio-bot/worker/tvr';
+import { tvrAdd, tvrRemoveBeitrag, tvrRename, tvrSend, tvrStatus } from '@bexio-bot/worker/tvr';
 import type { CfAccessIdentity } from '$lib/server/cf-access.ts';
 
 const isoDate = z
@@ -62,7 +62,7 @@ function buildServer(caller: string | undefined) {
         completion_date: isoDate,
         dry_run: z.boolean().optional().default(false).describe('true = nur zeigen, was passieren würde'),
       },
-      annotations: { idempotentHint: true, destructiveHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
     (args) => run(() => tvrAdd(db, args, caller)),
   );
@@ -78,23 +78,46 @@ function buildServer(caller: string | undefined) {
         invoice_id: z.number().int().positive(),
         confirm: z.literal(true),
       },
-      annotations: { destructiveHint: true, idempotentHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
     (args) => run(() => tvrSend(db, args, caller)),
   );
 
+  const title = (what: string) =>
+    z.string().min(1).max(200).describe(`${what} — wie auf der Rechnung, z. B. «Kuhrennen» oder der ganze Positionstext`);
+
   server.registerTool(
-    'tvr_remove_position',
+    'tvr_rename_beitrag',
     {
-      title: 'TV-Rheintal: Position entfernen',
-      description: 'Entfernt eine Position aus einer TV-Rheintal-Rechnung im Entwurfsstatus (Korrektur).',
+      title: 'TV-Rheintal: Beitragstitel korrigieren',
+      description:
+        'Ändert den Text EINER Position (z. B. Tippfehler) direkt in bexio. Betrifft nur Entwürfe; ' +
+        'Betrag, Anzahl und Reihenfolge bleiben gleich. Umkehrbar (zurück-umbenennen). ' +
+        'Fehler statt Raten bei keinem oder mehreren Treffern.',
       inputSchema: {
-        invoice_id: z.number().int().positive(),
-        position_id: z.number().int().positive(),
+        old_title: title('Bisheriger Titel'),
+        new_title: z.string().min(1).max(200).describe('Korrigierter Kurztitel'),
+        dry_run: z.boolean().optional().default(false),
       },
-      annotations: { destructiveHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
-    (args) => run(() => tvrRemovePosition(db, args, caller)),
+    (args) => run(() => tvrRename(db, args, caller)),
+  );
+
+  server.registerTool(
+    'tvr_remove_beitrag',
+    {
+      title: 'TV-Rheintal: Beitrag entfernen',
+      description:
+        'Entfernt EINE Beitragsposition, benannt über ihren Titel. Betrifft nur Entwürfe. ' +
+        'Gibt Text und Betrag zurück, damit der Beitrag mit tvr_add_beitrag wieder hinzugefügt werden kann.',
+      inputSchema: {
+        title: title('Titel der zu entfernenden Position'),
+        dry_run: z.boolean().optional().default(false),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    },
+    (args) => run(() => tvrRemoveBeitrag(db, args, caller)),
   );
 
   return server;

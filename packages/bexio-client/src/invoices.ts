@@ -289,6 +289,23 @@ export async function addCustomPosition(
   });
 }
 
+/**
+ * Edit a custom position in place (bexio 2.0: POST = edit, PUT = overwrite).
+ * Endpoint: POST /kb_invoice/{id}/kb_position_custom/{positionId}.
+ */
+export async function editCustomPosition(
+  accessToken: string,
+  invoiceId: number,
+  positionId: number,
+  input: Partial<CustomPositionInput>,
+): Promise<BexioInvoicePosition> {
+  return callBexio<BexioInvoicePosition>(`/kb_invoice/${invoiceId}/kb_position_custom/${positionId}`, {
+    accessToken,
+    method: 'POST',
+    body: input,
+  });
+}
+
 /** DELETE /kb_invoice/{id}/kb_position_custom/{positionId}. */
 export async function deleteCustomPosition(
   accessToken: string,

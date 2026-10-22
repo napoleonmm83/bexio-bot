@@ -24,6 +24,7 @@ export {
   findInvoiceByApiReference,
   searchInvoices,
   addCustomPosition,
+  editCustomPosition,
   deleteCustomPosition,
   NEUTRAL_TAX_ID_FALLBACK,
 } from './invoices.ts';
