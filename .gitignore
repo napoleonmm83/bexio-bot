@@ -64,3 +64,8 @@ oauth-tokens.json
 
 # Mockups dir is in ~/.gstack/, but in case it leaks here:
 mockups-tmp/
+.gstack/
+
+# Code Guardian gate reports (one-off evidence before a migration/deploy; facts live in commits + DB journal).
+# Deliberately not `.code-guardian-*` — that would also swallow project files like .code-guardian-deploy.yml.
+.code-guardian-*-report.md
