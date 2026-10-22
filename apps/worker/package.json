@@ -19,7 +19,7 @@
     "@bexio-bot/bexio-client": "workspace:*",
     "@bexio-bot/db": "workspace:*",
     "@bexio-bot/notify": "workspace:*",
-    "drizzle-orm": "^0.36.0",
+    "drizzle-orm": "^0.45.4",
     "pino": "^9.5.0"
   }
 }
