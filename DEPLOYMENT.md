@@ -219,6 +219,10 @@ Notes:
   this lock, anyone who learns the origin IP can bypass CF Access by hitting
   it directly.
 
+  **Status 2026-10-22: appears active.** A direct HTTPS request to the origin
+  IP (bypassing CF) times out, while SSH on port 22 answers. The firewall rule
+  itself was not inspected; the CF-ranges-only scope is inferred.
+
   Quickstart on the Coolify host (replace `<cf-ip-range>` for each entry from
   https://www.cloudflare.com/ips-v4 and ips-v6):
 
