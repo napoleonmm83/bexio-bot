@@ -17,7 +17,7 @@ async function rpc(body: unknown) {
 }
 
 describe('/mcp', () => {
-  test('lists exactly the four TV-Rheintal tools; send requires confirm=true', async () => {
+  test('lists exactly the five TV-Rheintal tools; send requires confirm=true', async () => {
     const init = await rpc({
       jsonrpc: '2.0',
       id: 1,
@@ -48,7 +48,9 @@ describe('/mcp', () => {
     const remove = tools.find((t) => t.name === 'tvr_remove_beitrag')!;
     expect(Object.keys(remove.inputSchema.properties).sort()).toEqual(['dry_run', 'title']);
     const send = tools.find((t) => t.name === 'tvr_send_invoice')!;
-    expect(send.inputSchema.required?.sort()).toEqual(['confirm', 'invoice_id']);
+    // Addressed by the number the user sees on the invoice, never by an internal id.
+    expect(send.inputSchema.required?.sort()).toEqual(['confirm', 'invoice_nr']);
+    expect(send.inputSchema.properties.invoice_nr).toMatchObject({ type: 'string' });
     expect(send.inputSchema.properties.confirm).toMatchObject({ const: true });
   });
 
@@ -58,11 +60,24 @@ describe('/mcp', () => {
       jsonrpc: '2.0',
       id: 3,
       method: 'tools/call',
-      params: { name: 'tvr_send_invoice', arguments: { invoice_id: 284, confirm: false } },
+      params: { name: 'tvr_send_invoice', arguments: { invoice_nr: 'RE-00284', confirm: false } },
     });
     const text = JSON.stringify(res.json);
     expect(text).toContain('confirm');
     expect(text).toMatch(/invalid|expected/i);
+    expect(text).not.toContain('TVR_CONTACT_ID');
+  });
+
+  test('send rejects a malformed invoice number by schema (no bexio call)', async () => {
+    delete process.env.TVR_CONTACT_ID;
+    const res = await rpc({
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'tvr_send_invoice', arguments: { invoice_nr: '284', confirm: true } },
+    });
+    const text = JSON.stringify(res.json);
+    expect(text).toContain('invoice_nr');
     expect(text).not.toContain('TVR_CONTACT_ID');
   });
 });

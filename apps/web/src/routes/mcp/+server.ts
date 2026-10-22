@@ -75,7 +75,10 @@ function buildServer(caller: string | undefined) {
         'Stellt eine TV-Rheintal-Entwurfsrechnung aus und versendet sie per bexio-Mail. NICHT umkehrbar. ' +
         'Nur nach ausdrücklicher Freigabe durch Marcus aufrufen; confirm muss true sein.',
       inputSchema: {
-        invoice_id: z.number().int().positive(),
+        invoice_nr: z
+          .string()
+          .regex(/^RE-\d{3,}$/, 'invoice_nr muss eine Rechnungsnummer wie RE-00284 sein')
+          .describe('Rechnungsnummer wie auf der Rechnung, z. B. «RE-00284»'),
         confirm: z.literal(true),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },

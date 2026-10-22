@@ -306,7 +306,18 @@ async function loadOwnDraft(token: string, cfg: TvrConfig, invoiceId: number): P
   return inv;
 }
 
-export async function tvrSend(db: Db, input: { invoice_id: number; confirm: boolean }, caller?: string) {
+/** Resolve the invoice number the user sees (RE-00284) to exactly one TV-Rheintal invoice id. */
+async function invoiceIdByNumber(token: string, cfg: TvrConfig, invoiceNr: string): Promise<number> {
+  const nr = invoiceNr.trim().toUpperCase();
+  const hits = await searchInvoices(token, [{ field: 'document_nr', value: nr, criteria: '=' }], 10);
+  // bexio's search may match loosely — insist on an exact number and our contact.
+  const exact = hits.filter((h) => h.document_nr === nr);
+  if (exact.length !== 1) throw new Error(`Rechnung ${nr} nicht eindeutig gefunden (${exact.length} Treffer)`);
+  if (exact[0].contact_id !== cfg.contactId) throw new Error(`${nr} ist keine TV-Rheintal-Rechnung`);
+  return exact[0].id;
+}
+
+export async function tvrSend(db: Db, input: { invoice_nr: string; confirm: boolean }, caller?: string) {
   return audit(db, 'tvr_send_invoice', caller, input, async () => {
     if (input.confirm !== true) throw new Error('confirm must be true');
     const cfg = loadTvrConfig();
@@ -317,7 +328,7 @@ export async function tvrSend(db: Db, input: { invoice_id: number; confirm: bool
     // retried) call sees the issued invoice as non-draft and is refused — never a 2nd mail.
     return db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(${TVR_SEND_LOCK_KEY})`);
-      const inv = await loadOwnDraft(token, cfg, input.invoice_id);
+      const inv = await loadOwnDraft(token, cfg, await invoiceIdByNumber(token, cfg, input.invoice_nr));
       const contact = await getContact(token, cfg.contactId);
       if (!contact.mail) throw new Error('TV Rheintal contact has no e-mail address in bexio');
 
