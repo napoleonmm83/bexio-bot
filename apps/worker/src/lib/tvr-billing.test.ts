@@ -6,7 +6,9 @@ import {
   invoiceDateFor,
   normalizeTitle,
   planAdd,
+  positionText,
   sendDueFor,
+  titleChanged,
   type TvrInvoice,
 } from './tvr-billing';
 
@@ -131,6 +133,21 @@ test('bug report §4: two spaces after the dash (bexio UI) equal one space (bot)
   expect(normalizeTitle('Video Beitrag TV Rheintal —  Kuhrennen')).toBe(normalizeTitle('Video Beitrag TV Rheintal — Kuhrennen'));
 });
 
+test('review F1: a title that already carries the prefix is not prefixed twice', () => {
+  expect(positionText('Video Beitrag TV Rheintal — Kuhrennen')).toBe('Video Beitrag TV Rheintal — Kuhrennen');
+  expect(positionText('<span>Video Beitrag TV Rheintal &mdash;&nbsp; Kuhrennen</span>')).toBe(
+    'Video Beitrag TV Rheintal — Kuhrennen',
+  );
+  expect(positionText('video beitrag tv rheintal - Kuhrennen')).toBe('Video Beitrag TV Rheintal — Kuhrennen');
+  expect(positionText('  Kuhrennen ')).toBe('Video Beitrag TV Rheintal — Kuhrennen');
+});
+
+test('review F2: titleChanged sees case/quote/dash-only corrections as a change', () => {
+  expect(titleChanged('kuhrennen', 'Kuhrennen')).toBe(true);
+  expect(titleChanged('Kuh-Rennen', 'Kuh–Rennen')).toBe(true);
+  expect(titleChanged('Kuhrennen', 'Video Beitrag TV Rheintal — Kuhrennen')).toBe(false);
+});
+
 describe('findPositionByTitle (rename/remove address by the title the user sees)', () => {
   const inv = (id: number, isDraft: boolean, texts: [number, string][]) => ({
     id,
@@ -158,6 +175,13 @@ describe('findPositionByTitle (rename/remove address by the title the user sees)
   test('two matches (duplicate rows) → many, never pick one', () => {
     const dup = inv(300, true, [[1, 'Video Beitrag TV Rheintal — Kuhrennen']]);
     expect(findPositionByTitle([re284, dup], 'Kuhrennen')).toMatchObject({ kind: 'many' });
+  });
+  test('review F5 (by design): same title on a sent AND a draft invoice → the draft is the target', () => {
+    const sent = inv(250, false, [[9, 'Video Beitrag TV Rheintal — Kuhrennen']]);
+    expect(findPositionByTitle([sent, re284], 'Kuhrennen')).toMatchObject({ kind: 'one', ref: { positionId: 539 } });
+  });
+  test('excludePositionId: the renamed position itself is not a clash', () => {
+    expect(findPositionByTitle([re284], 'Kuhrennen', { excludePositionId: 539 })).toEqual({ kind: 'none' });
   });
   test('positions on sent invoices are never touched', () => {
     const sent = inv(250, false, [[9, 'Video Beitrag TV Rheintal — Alpabzug']]);

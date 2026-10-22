@@ -110,7 +110,7 @@ function buildServer(caller: string | undefined) {
       title: 'TV-Rheintal: Beitrag entfernen',
       description:
         'Entfernt EINE Beitragsposition, benannt über ihren Titel. Betrifft nur Entwürfe. ' +
-        'Gibt Text und Betrag zurück, damit der Beitrag mit tvr_add_beitrag wieder hinzugefügt werden kann.',
+        'Gibt Text und Betrag zurück. Erneut hinzufügen mit tvr_add_beitrag (immer zum Standardpreis).',
       inputSchema: {
         title: title('Titel der zu entfernenden Position'),
         dry_run: z.boolean().optional().default(false),

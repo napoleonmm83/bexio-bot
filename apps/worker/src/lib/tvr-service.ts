@@ -27,11 +27,11 @@ import {
   dueDateFor,
   findPositionByTitle,
   htmlToText,
-  normalizeTitle,
   planAdd,
   positionText,
   sendDueFor,
   targetFor,
+  titleChanged,
   type TvrInvoice,
   type Ymd,
 } from './tvr-billing.ts';
@@ -132,15 +132,17 @@ const toTvr = (inv: BexioInvoice): TvrInvoice => ({
 });
 
 function summarize(inv: BexioInvoice, today: Ymd) {
-  const positions = (inv.positions ?? []).filter((p) => p.type !== 'KbPositionText');
+  // Display number: bexio's `pos`, else the row index in the UNFILTERED list (headings count in bexio too).
+  const all = inv.positions ?? [];
+  const positions = all.filter((p) => p.type !== 'KbPositionText');
   return {
     invoice_id: inv.id,
     invoice_nr: inv.document_nr,
     invoice_status: inv.kb_item_status_id === BEXIO_STATUS_DRAFT ? 'draft' : `status_${inv.kb_item_status_id}`,
     invoice_date: isoDate(inv.is_valid_from),
     due_date: isoDate(inv.is_valid_to),
-    positions: positions.map((p, i) => ({
-      pos: Number(p.pos) || i + 1, // display number as in the bexio UI
+    positions: positions.map((p) => ({
+      pos: Number(p.pos) || all.indexOf(p) + 1,
       text: plainText(p.text),
       amount: p.position_total,
     })),
@@ -349,11 +351,15 @@ export async function tvrSend(db: Db, input: { invoice_id: number; confirm: bool
 const plainText = (html: string | null) => htmlToText(html ?? '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
 
 /** Resolve the ONE draft position the user named by title, or throw a user-readable error. */
+/** Only chargeable custom positions are addressable — headings (KbPositionText) never match. */
+const customPositionsOf = (recent: BexioInvoice[]) =>
+  recent.map((i) => ({
+    ...toTvr(i),
+    positions: (i.positions ?? []).filter((p) => p.type === 'KbPositionCustom').map((p) => ({ id: p.id, text: p.text })),
+  }));
+
 function resolveByTitle(recent: BexioInvoice[], title: string) {
-  const hit = findPositionByTitle(
-    recent.map((i) => ({ ...toTvr(i), positions: (i.positions ?? []).map((p) => ({ id: p.id, text: p.text })) })),
-    title,
-  );
+  const hit = findPositionByTitle(customPositionsOf(recent), title);
   if (hit.kind === 'none') throw new Error(`Keine Position «${title}» in einer TV-Rheintal-Entwurfsrechnung gefunden`);
   if (hit.kind === 'many') {
     throw new Error(`«${title}» steht ${hit.refs.length}× in Entwürfen — bitte in bexio bereinigen, der Bot wählt nicht aus`);
@@ -374,7 +380,7 @@ export async function tvrRename(
     const newTitle = input.new_title?.trim();
     if (!input.old_title?.trim() || !newTitle) throw new Error('old_title und new_title sind Pflicht');
     if (newTitle.length > 200) throw new Error('new_title too long (max 200)');
-    if (normalizeTitle(input.old_title) === normalizeTitle(newTitle)) throw new Error('Alter und neuer Titel sind gleich');
+    if (!titleChanged(input.old_title, newTitle)) throw new Error('Alter und neuer Titel sind gleich');
     const cfg = loadTvrConfig();
     const token = await getValidAccessToken(db);
 
@@ -384,10 +390,8 @@ export async function tvrRename(
       const recent = await loadRecent(token, cfg, today);
       const { inv, pos } = resolveByTitle(recent, input.old_title);
       // Same dedup scope as tvr_add_beitrag: the new title must not exist anywhere recent (any status).
-      const clash = findPositionByTitle(
-        recent.map((i) => ({ ...toTvr(i), positions: (i.positions ?? []).map((p) => ({ id: p.id, text: p.text })) })),
-        newTitle,
-      );
+      // The renamed position itself is excluded, so a pure case/quote fix (kuhrennen → Kuhrennen) passes.
+      const clash = findPositionByTitle(customPositionsOf(recent), newTitle, { excludePositionId: pos.id });
       if (clash.kind !== 'none') throw new Error(`«${newTitle}» existiert bereits auf einer TV-Rheintal-Rechnung`);
 
       const newText = positionText(newTitle);
@@ -396,6 +400,14 @@ export async function tvrRename(
       }
       await editCustomPosition(token, inv.id, pos.id, { text: newText });
       const after = await getInvoice(token, inv.id);
+      // Edit sends only {text}; verify bexio left the money untouched (unverified partial-update semantics).
+      const edited = (after.positions ?? []).find((p) => p.id === pos.id);
+      if (!edited || edited.position_total !== pos.position_total || after.total !== inv.total) {
+        throw new Error(
+          `Umbenennen hat in bexio mehr als den Text verändert (Position vorher ${pos.position_total}, ` +
+            `nachher ${edited?.position_total ?? 'fehlt'}; Total ${inv.total} → ${after.total}). Bitte in bexio prüfen.`,
+        );
+      }
       return { status: 'renamed', old_text: plainText(pos.text), new_text: newText, ...summarize(after, today) };
     });
   });

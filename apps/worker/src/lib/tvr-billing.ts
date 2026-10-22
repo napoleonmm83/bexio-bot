@@ -39,8 +39,23 @@ export function dueDateFor(invoiceDate: string, days = 30): string {
   return d.toISOString().slice(0, 10);
 }
 
+/** Bare title from user input: decodes HTML and strips a "Video Beitrag TV Rheintal —" prefix the caller may have copied. */
+export function bareTitle(title: string): string {
+  return htmlToText(title)
+    .replace(/ /g, ' ')
+    .replace(/^\s*video beitrag tv rheintal\s*[-‒-―−]\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Always exactly one prefix — a full position text passed as title is not prefixed twice. */
 export function positionText(title: string): string {
-  return `${POSITION_PREFIX}${title.trim()}`;
+  return `${POSITION_PREFIX}${bareTitle(title)}`;
+}
+
+/** Exact (case-, quote- and dash-sensitive) comparison: a typo fix like kuhrennen → Kuhrennen IS a change. */
+export function titleChanged(oldTitle: string, newTitle: string): boolean {
+  return bareTitle(oldTitle) !== bareTitle(newTitle);
 }
 
 const ENTITIES: Record<string, string> = {
@@ -141,12 +156,15 @@ export type PositionLookup =
 export function findPositionByTitle(
   invoices: Array<{ id: number; isDraft: boolean; positions: Array<{ id: number; text: string | null }> }>,
   title: string,
+  opts: { excludePositionId?: number } = {},
 ): PositionLookup {
-  const wanted = new Set([normalizeTitle(positionText(title)), normalizeTitle(title)]);
+  // positionText() strips a copied prefix, so bare title and full text resolve to the same key.
+  const wanted = normalizeTitle(positionText(title));
   const refs: Array<PositionRef & { isDraft: boolean }> = [];
   for (const inv of invoices) {
     for (const p of inv.positions) {
-      if (p.text && wanted.has(normalizeTitle(p.text))) {
+      if (p.id === opts.excludePositionId) continue;
+      if (p.text && normalizeTitle(p.text) === wanted) {
         refs.push({ invoiceId: inv.id, positionId: p.id, text: p.text, isDraft: inv.isDraft });
       }
     }
