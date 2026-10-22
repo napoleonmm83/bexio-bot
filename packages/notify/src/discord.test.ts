@@ -1,5 +1,5 @@
 import { expect, test, describe } from 'bun:test';
-import { isAllowedDiscordWebhook, pickStatus } from './discord.ts';
+import { fitLines, isAllowedDiscordWebhook, pickStatus } from './discord.ts';
 
 // Minimal DiscordRunReport for pickStatus (only errors/results/subscriptionResults matter).
 const report = (over: Record<string, unknown> = {}) => ({
@@ -27,6 +27,23 @@ describe('pickStatus — run-level errors[] must not be masked by a green headli
   });
   test('a notice (e.g. TV-Rheintal reminder) never turns the run red', () => {
     expect(pickStatus(report({ notices: ['RE-00284 noch nicht versendet'] }) as never)).toBe('no-due');
+  });
+  test('overdue invoices never turn the run red', () => {
+    expect(pickStatus(report({ overdueInvoices: ['RE-1 · X · CHF 1.00 · 3 Tage überfällig'] }) as never)).toBe('no-due');
+  });
+});
+
+describe('fitLines — Discord field limit without cutting a line', () => {
+  test('everything fits → plain join', () => {
+    expect(fitLines(['a', 'b'], 1024)).toBe('a\nb');
+  });
+  test('overflow keeps whole lines and stays within the limit', () => {
+    const lines = Array.from({ length: 60 }, (_, i) => `RE-${String(i).padStart(5, '0')} · Kunde mit langem Namen · CHF 1'000.00 · 12 Tage`);
+    const out = fitLines(lines, 1024);
+    expect(out.length).toBeLessThanOrEqual(1024);
+    const shown = out.split('\n');
+    expect(shown.at(-1)).toBe(`… und ${60 - (shown.length - 1)} weitere`);
+    expect(lines).toContain(shown[0]!);
   });
 });
 

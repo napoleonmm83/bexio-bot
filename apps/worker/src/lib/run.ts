@@ -11,7 +11,7 @@
 import { eq, sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { botRuns } from '@bexio-bot/db';
-import { getValidAccessToken } from '@bexio-bot/bexio-client';
+import { getValidAccessToken, listUnpaidInvoices } from '@bexio-bot/bexio-client';
 import { notifyAll, type ChannelResult } from '@bexio-bot/notify';
 import { syncRecurringOrders, getEnabledOrders, getProcessableOrderById } from './sync.ts';
 import { loadWorkerSettings, type WorkerSettings } from './settings.ts';
@@ -26,6 +26,7 @@ import {
 // (now always empty) RunSummary field so downstream consumers are unchanged.
 import { type ProcessSubscriptionResult } from './subscriptions.ts';
 import { tvrPendingReminder } from './tvr-service.ts';
+import { formatOverdue, zurichToday } from './overdue.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -299,6 +300,15 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     }
   }
 
+  // ── 5a'. Mahnwesen Stufe 1: overdue invoices → Discord ─────
+  // Read-only, so it also runs in dry-run. A failing check is an error, never fatal.
+  let overdueInvoices: string[] = [];
+  try {
+    overdueInvoices = formatOverdue(await listUnpaidInvoices(accessToken), zurichToday(new Date()));
+  } catch (err) {
+    errors.push({ stage: 'overdue', message: err instanceof Error ? err.message : String(err) });
+  }
+
   // ── 5b. Subscription-layer pipeline — DEPRECATED (2026-06-01) ─────────
   // The bot-native subscription pipeline is retired: it was never used in
   // production (0 rows, confirmed by live probe) and the order pipeline already
@@ -342,6 +352,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     driftWarnings: sync.driftWarnings,
     unsupportedOrders: sync.unsupportedOrders,
     notices,
+    overdueInvoices,
     errors,
     results: results.map((r) => ({
       customerName: r.customerName,

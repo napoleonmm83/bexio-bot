@@ -23,6 +23,7 @@ export {
   getInvoice,
   findInvoiceByApiReference,
   searchInvoices,
+  listUnpaidInvoices,
   addCustomPosition,
   editCustomPosition,
   deleteCustomPosition,

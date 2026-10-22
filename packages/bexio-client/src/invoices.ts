@@ -264,6 +264,30 @@ export async function searchInvoices(
   });
 }
 
+/** Invoice status IDs, verified live 2026-10-22 (236 invoices): 7 draft, 8 open, 9 paid, 16 partial, 19 canceled. */
+export const BEXIO_INVOICE_STATUS_OPEN = 8;
+export const BEXIO_INVOICE_STATUS_PARTIAL = 16;
+
+/**
+ * All invoices still awaiting payment (open or partially paid), via paged GET /kb_invoice.
+ * The plain list (not /search) is the form verified live; filtering happens client-side.
+ */
+export async function listUnpaidInvoices(accessToken: string, pageSize = 500): Promise<BexioInvoice[]> {
+  const unpaid: BexioInvoice[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await callBexio<BexioInvoice[]>('/kb_invoice', {
+      accessToken,
+      query: { limit: pageSize, offset },
+    });
+    for (const inv of page) {
+      if (inv.kb_item_status_id === BEXIO_INVOICE_STATUS_OPEN || inv.kb_item_status_id === BEXIO_INVOICE_STATUS_PARTIAL) {
+        unpaid.push(inv);
+      }
+    }
+    if (page.length < pageSize) return unpaid;
+  }
+}
+
 export type CustomPositionInput = {
   amount: string;
   unit_id: number;

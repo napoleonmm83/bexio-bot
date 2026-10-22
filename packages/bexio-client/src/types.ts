@@ -221,6 +221,8 @@ export type BexioInvoice = {
   kb_item_status_id: number; // bexio's status enum (open, paid, etc.)
   api_reference?: string | null;
   updated_at: string;
+  /** Present on GET /kb_invoice list (verified 2026-10-22). Decimal string, CHF. */
+  total_remaining_payments?: string;
   // Present on GET /kb_invoice/{id} (verified on RE-00284, 2026-10-22); absent on search results.
   user_id?: number;
   language_id?: number;

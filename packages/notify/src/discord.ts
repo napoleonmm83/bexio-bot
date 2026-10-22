@@ -47,6 +47,8 @@ export type DiscordRunReport = {
   unsupportedOrders?: Array<{ bexioOrderId: number; customerName: string; bexioType: string }>;
   /** Actionable reminders that are NOT errors (do not affect the run status). */
   notices?: string[];
+  /** Overdue unpaid invoices, one preformatted line each (Mahnwesen Stufe 1). Not an error. */
+  overdueInvoices?: string[];
   subscriptionResults: Array<{
     kind: 'sent' | 'skipped_duplicate' | 'failed';
     subscriptionId: number;
@@ -243,6 +245,13 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
       inline: false,
     });
   }
+  if (r.overdueInvoices && r.overdueInvoices.length > 0) {
+    fields.push({
+      name: `💸 Überfällige Rechnungen (${r.overdueInvoices.length})`,
+      value: fitLines(r.overdueInvoices.map((l) => `· ${l}`), 1024),
+      inline: false,
+    });
+  }
   if (r.errors.length > 0) {
     fields.push({
       name: '⚠ Worker-Fehler',
@@ -331,6 +340,22 @@ function pickDescription(status: ReturnType<typeof pickStatus>, r: DiscordRunRep
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
+}
+
+/** Join whole lines up to `max` chars; the rest becomes "… und n weitere" instead of a cut line. */
+export function fitLines(lines: string[], max: number): string {
+  const out: string[] = [];
+  let len = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const rest = lines.length - i - 1;
+    const tail = rest > 0 ? `\n… und ${rest} weitere`.length : 0;
+    if (len + lines[i]!.length + (out.length ? 1 : 0) + tail > max) {
+      return [...out, `… und ${lines.length - i} weitere`].join('\n');
+    }
+    out.push(lines[i]!);
+    len += lines[i]!.length + (out.length > 1 ? 1 : 0);
+  }
+  return out.join('\n');
 }
 
 function formatTime(d: Date): string {
