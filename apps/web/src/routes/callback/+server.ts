@@ -44,9 +44,13 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
   // OAuth rebind guard (SEC): state+PKCE only stop CSRF, not an attacker running
   // their OWN bexio OAuth end-to-end against this public callback and clobbering
   // the shared token rows. When BEXIO_ALLOWED_COMPANY is configured, verify the
-  // connecting org matches before storing tokens. Fail-open (no check) when unset
-  // so re-auth is never locked out before the allowlist is configured.
+  // connecting org matches before storing tokens. Fail-closed in production when
+  // unset (an empty var would silently disable the guard); local dev stays open.
   const allowed = env.BEXIO_ALLOWED_COMPANY;
+  if (!allowed && env.NODE_ENV === 'production') {
+    console.error('[callback] BEXIO_ALLOWED_COMPANY not set — refusing to store tokens');
+    error(500, 'bexio org allowlist not configured');
+  }
   if (allowed) {
     let profile: Awaited<ReturnType<typeof getCompanyProfile>> = null;
     try {
