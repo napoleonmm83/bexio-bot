@@ -25,6 +25,9 @@ describe('pickStatus — run-level errors[] must not be masked by a green headli
   test('nothing sent, no errors → no-due', () => {
     expect(pickStatus(report() as never)).toBe('no-due');
   });
+  test('a notice (e.g. TV-Rheintal reminder) never turns the run red', () => {
+    expect(pickStatus(report({ notices: ['RE-00284 noch nicht versendet'] }) as never)).toBe('no-due');
+  });
 });
 
 describe('isAllowedDiscordWebhook — webhook host allowlist blocks SSRF (SEC-4)', () => {

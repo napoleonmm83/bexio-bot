@@ -37,7 +37,7 @@ export function formatBillingPeriod(isoDate: string, repetitionType?: BexioRepet
   return `${parts.year}-${parts.month}`;
 }
 
-function getZurichParts(d: Date): { year: string; month: string; day: string } {
+export function getZurichParts(d: Date): { year: string; month: string; day: string } {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: ZURICH_TZ,
     year: 'numeric',

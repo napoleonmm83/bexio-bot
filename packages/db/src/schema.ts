@@ -155,6 +155,26 @@ export const botRuns = pgTable(
 );
 
 /**
+ * Audit trail of TV-Rheintal MCP tool calls (who/what/result). One row per call.
+ * Never stores tokens — input is the tool arguments, result the tool's JSON answer.
+ */
+export const tvrToolCalls = pgTable(
+  'tvr_tool_calls',
+  {
+    id: integer('id').primaryKey().generatedAlwaysAsIdentity(),
+    calledAt: timestamp('called_at', { withTimezone: true }).notNull().defaultNow(),
+    tool: text('tool').notNull(),
+    caller: text('caller'),
+    inputJsonb: jsonb('input_jsonb').notNull(),
+    resultJsonb: jsonb('result_jsonb'),
+    error: text('error'),
+  },
+  (t) => ({
+    calledAtIdx: index('idx_tvr_tool_calls_called_at').on(t.calledAt),
+  }),
+);
+
+/**
  * Plain-text storage of OAuth refresh token + access token cache.
  * Solo internal tool, private Coolify, strong Postgres password — no pgcrypto.
  */

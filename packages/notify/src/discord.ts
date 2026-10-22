@@ -45,6 +45,8 @@ export type DiscordRunReport = {
   /** Recurring orders whose bexio repetition type the bot can't process — surfaced
    *  so they aren't silently dropped by the orchestrator (EDGE-8). */
   unsupportedOrders?: Array<{ bexioOrderId: number; customerName: string; bexioType: string }>;
+  /** Actionable reminders that are NOT errors (do not affect the run status). */
+  notices?: string[];
   subscriptionResults: Array<{
     kind: 'sent' | 'skipped_duplicate' | 'failed';
     subscriptionId: number;
@@ -231,6 +233,13 @@ function buildRunEmbed(r: DiscordRunReport): Embed {
         .map((d) => `· #${d.bexioOrderId} ${truncate(d.customerName, 32)}: ${d.detail}`)
         .join('\n')
         .slice(0, 1024),
+      inline: false,
+    });
+  }
+  if (r.notices && r.notices.length > 0) {
+    fields.push({
+      name: '📌 Hinweise',
+      value: r.notices.map((n) => `· ${n}`).join('\n').slice(0, 1024),
       inline: false,
     });
   }

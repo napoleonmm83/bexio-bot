@@ -25,6 +25,7 @@ import {
 // Subscription pipeline retired 2026-06-01 (see step 5b). Type kept for the
 // (now always empty) RunSummary field so downstream consumers are unchanged.
 import { type ProcessSubscriptionResult } from './subscriptions.ts';
+import { tvrPendingReminder } from './tvr-service.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = PostgresJsDatabase<any>;
@@ -142,6 +143,7 @@ function buildSkippedSummary(runId: number, startedAt: Date, finishedAt: Date): 
 export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSummary> {
   const startedAt = new Date();
   const errors: RunSummary['errors'] = [];
+  const notices: string[] = [];
   const triggerSource: TriggerSource = options.triggerSource ?? 'cron';
 
   // ── 1. Open bot_runs row (or reuse) ────────────────────────────────
@@ -286,6 +288,15 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     for (const a of collectBillingAnomalies(results)) {
       errors.push({ stage: `billing-anomaly(order ${a.orderId})`, message: `${a.customerName}: ${a.reason}` });
     }
+    // TV-Rheintal safety net (6th of month): last month's invoice still a draft.
+    // A draft on the 6th is normal (window runs to the 8th) → notice, not error.
+    // Only a failing CHECK is an error.
+    try {
+      const reminder = await tvrPendingReminder(accessToken);
+      if (reminder) notices.push(reminder);
+    } catch (err) {
+      errors.push({ stage: 'tvr-reminder', message: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   // ── 5b. Subscription-layer pipeline — DEPRECATED (2026-06-01) ─────────
@@ -330,6 +341,7 @@ export async function runDaily(db: Db, options: RunDailyOptions): Promise<RunSum
     newOrders: sync.newOrders,
     driftWarnings: sync.driftWarnings,
     unsupportedOrders: sync.unsupportedOrders,
+    notices,
     errors,
     results: results.map((r) => ({
       customerName: r.customerName,

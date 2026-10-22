@@ -7,6 +7,7 @@
 import { callBexio } from './http.ts';
 import type {
   BexioInvoice,
+  BexioInvoicePosition,
   BexioOrder,
   BexioOrderPosition,
   CreateInvoiceFromOrderInput,
@@ -72,7 +73,7 @@ export async function createInvoiceFromOrderSnapshot(
 // With mwst_type=2 the engine zeros out the tax math regardless of which active
 // sales_tax id we pass — verified live 2026-05-20: a CHF 1.00 line stayed at
 // total_taxes=0.0000 with tax_id=28. Account-specific id (UN81 8.1%, active).
-const NEUTRAL_TAX_ID_FALLBACK = 28;
+export const NEUTRAL_TAX_ID_FALLBACK = 28;
 
 export function buildCreateInvoiceInputFromOrder(
   order: BexioOrder,
@@ -245,6 +246,59 @@ export async function findInvoiceByApiReference(
     body: [{ field: 'api_reference', value: apiReference, criteria: '=' }],
   });
   return results.find((inv) => inv.api_reference === apiReference) ?? null;
+}
+
+export type InvoiceSearchCriterion = { field: string; value: string | number; criteria: string };
+
+/** POST /kb_invoice/search. Results carry header fields only — no positions. */
+export async function searchInvoices(
+  accessToken: string,
+  criteria: InvoiceSearchCriterion[],
+  limit = 100,
+): Promise<BexioInvoice[]> {
+  return callBexio<BexioInvoice[]>('/kb_invoice/search', {
+    accessToken,
+    method: 'POST',
+    query: { limit },
+    body: criteria,
+  });
+}
+
+export type CustomPositionInput = {
+  amount: string;
+  unit_id: number;
+  account_id: number;
+  tax_id: number;
+  text: string;
+  unit_price: string;
+};
+
+/**
+ * Append a custom (non-article) position to an existing draft.
+ * Endpoint: POST /kb_invoice/{id}/kb_position_custom (bexio API 2.0 "Default positions").
+ */
+export async function addCustomPosition(
+  accessToken: string,
+  invoiceId: number,
+  input: CustomPositionInput,
+): Promise<BexioInvoicePosition> {
+  return callBexio<BexioInvoicePosition>(`/kb_invoice/${invoiceId}/kb_position_custom`, {
+    accessToken,
+    method: 'POST',
+    body: input,
+  });
+}
+
+/** DELETE /kb_invoice/{id}/kb_position_custom/{positionId}. */
+export async function deleteCustomPosition(
+  accessToken: string,
+  invoiceId: number,
+  positionId: number,
+): Promise<void> {
+  await callBexio<void>(`/kb_invoice/${invoiceId}/kb_position_custom/${positionId}`, {
+    accessToken,
+    method: 'DELETE',
+  });
 }
 
 /**

@@ -22,8 +22,12 @@ export {
   sendInvoice,
   getInvoice,
   findInvoiceByApiReference,
+  searchInvoices,
+  addCustomPosition,
+  deleteCustomPosition,
+  NEUTRAL_TAX_ID_FALLBACK,
 } from './invoices.ts';
-export type { SendInvoiceInput } from './invoices.ts';
+export type { SendInvoiceInput, InvoiceSearchCriterion, CustomPositionInput } from './invoices.ts';
 export {
   BexioApiError,
   formatContactName,
@@ -41,6 +45,7 @@ export {
   type CreateInvoiceFromOrderInput,
   type CreateInvoiceInput,
   type BexioInvoicePositionInput,
+  type BexioInvoicePosition,
   type BexioErrorClass,
   type MappedBexioStatus,
 } from './types.ts';

@@ -57,6 +57,13 @@
       "when": 1780353847385,
       "tag": "0007_interval_multiplier",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792694771331,
+      "tag": "0008_amused_nicolaos",
+      "breakpoints": true
     }
   ]
 }

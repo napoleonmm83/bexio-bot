@@ -221,6 +221,31 @@ export type BexioInvoice = {
   kb_item_status_id: number; // bexio's status enum (open, paid, etc.)
   api_reference?: string | null;
   updated_at: string;
+  // Present on GET /kb_invoice/{id} (verified on RE-00284, 2026-10-22); absent on search results.
+  user_id?: number;
+  language_id?: number;
+  bank_account_id?: number;
+  currency_id?: number;
+  payment_type_id?: number;
+  logopaper_id?: number;
+  template_slug?: string;
+  header?: string;
+  footer?: string;
+  contact_address?: string;
+  mwst_type?: number;
+  mwst_is_net?: boolean;
+  total_gross?: string;
+  positions?: BexioInvoicePosition[];
+};
+
+/** A position as returned by GET /kb_invoice/{id}. `text` is HTML. */
+export type BexioInvoicePosition = {
+  id: number;
+  type: string; // 'KbPositionCustom' | 'KbPositionArticle' | 'KbPositionText' | …
+  text: string | null;
+  amount?: string;
+  unit_price?: string;
+  position_total?: string;
 };
 
 export type CreateInvoiceFromOrderInput = {
@@ -274,6 +299,17 @@ export type CreateInvoiceInput = {
   mwst_type?: number; // 0 = incl, 1 = excl, 2 = exempt
   mwst_is_net?: boolean;
   api_reference?: string;
+  user_id?: number;
+  language_id?: number;
+  bank_account_id?: number;
+  currency_id?: number;
+  payment_type_id?: number;
+  logopaper_id?: number;
+  template_slug?: string;
+  header?: string;
+  footer?: string;
+  /** Overrides the contact's address on the document (e.g. c/o lines). */
+  contact_address?: string;
   /** Inline positions. At least one required. */
   positions: BexioInvoicePositionInput[];
 };

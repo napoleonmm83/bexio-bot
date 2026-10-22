@@ -69,7 +69,7 @@ export type OrderInput = {
   customerEmail: string | null;
 };
 
-function renderTemplate(template: string, vars: Record<string, string>): string {
+export function renderTemplate(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? `{${key}}`);
 }
 
