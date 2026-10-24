@@ -1,4 +1,6 @@
 import { sveltekit } from '@sveltejs/kit/vite';
+import adapter from '@sveltejs/adapter-node';
+import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -28,7 +30,8 @@ for (const fileName of ['.env', '.env.local']) {
 }
 
 export default defineConfig({
-  plugins: [sveltekit()],
+  // Kit 3: project config lives here; svelte.config.js is no longer read.
+  plugins: [sveltekit({ adapter: adapter(), preprocess: vitePreprocess() })],
   envDir,
   server: {
     port: 5173,
