@@ -1,18 +1,17 @@
 import { redirect, error } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { buildAuthUrl, generatePkce } from '$lib/server/bexio-oauth.ts';
+import { BEXIO_CLIENT_ID, BEXIO_REDIRECT_URI, NODE_ENV } from '$app/env/private';
+import { AUTH_URL, buildAuthUrl, generatePkce } from '#lib/server/bexio-oauth.ts';
 import type { RequestHandler } from './$types.ts';
 
 const COOKIE_OPTS = {
   path: '/',
   httpOnly: true,
   sameSite: 'lax',
-  secure: env.NODE_ENV === 'production',
-  maxAge: 300,
+  secure: NODE_ENV === 'production',
+  maxAge: 300
 } as const;
 
 export const GET: RequestHandler = ({ cookies }) => {
-  const { BEXIO_CLIENT_ID, BEXIO_REDIRECT_URI } = env;
   if (!BEXIO_CLIENT_ID || !BEXIO_REDIRECT_URI) {
     error(500, 'BEXIO_CLIENT_ID or BEXIO_REDIRECT_URI not configured');
   }
@@ -29,5 +28,6 @@ export const GET: RequestHandler = ({ cookies }) => {
     challenge,
   });
 
-  redirect(302, authUrl);
+  // Kit 3 rejects external redirects unless the origin is allowlisted.
+  redirect(302, authUrl, { external: [new URL(AUTH_URL).origin] });
 };

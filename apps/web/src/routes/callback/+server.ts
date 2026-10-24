@@ -1,12 +1,17 @@
 import { redirect, error } from '@sveltejs/kit';
-import { env } from '$env/dynamic/private';
-import { exchangeCode } from '$lib/server/bexio-oauth.ts';
+import {
+  BEXIO_ALLOWED_COMPANY,
+  BEXIO_CLIENT_ID,
+  BEXIO_CLIENT_SECRET,
+  BEXIO_REDIRECT_URI,
+  NODE_ENV,
+} from '$app/env/private';
+import { exchangeCode } from '#lib/server/bexio-oauth.ts';
 import { getCompanyProfile, isAllowedBexioCompany } from '@bexio-bot/bexio-client';
 import { getDb, secrets } from '@bexio-bot/db';
 import type { RequestHandler } from './$types.ts';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
-  const { BEXIO_CLIENT_ID, BEXIO_CLIENT_SECRET, BEXIO_REDIRECT_URI } = env;
   if (!BEXIO_CLIENT_ID || !BEXIO_CLIENT_SECRET || !BEXIO_REDIRECT_URI) {
     error(500, 'bexio OAuth env vars not configured');
   }
@@ -46,8 +51,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
   // the shared token rows. When BEXIO_ALLOWED_COMPANY is configured, verify the
   // connecting org matches before storing tokens. Fail-closed in production when
   // unset (an empty var would silently disable the guard); local dev stays open.
-  const allowed = env.BEXIO_ALLOWED_COMPANY;
-  if (!allowed && env.NODE_ENV === 'production') {
+  const allowed = BEXIO_ALLOWED_COMPANY;
+  if (!allowed && NODE_ENV === 'production') {
     console.error('[callback] BEXIO_ALLOWED_COMPANY not set — refusing to store tokens');
     error(500, 'bexio org allowlist not configured');
   }

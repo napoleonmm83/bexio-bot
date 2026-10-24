@@ -1,6 +1,6 @@
-import type { HandleServerError } from '@sveltejs/kit';
-import { verifyCfAccess } from '$lib/server/cf-access.ts';
-import { makeAuthHandle } from '$lib/server/route-auth.ts';
+import type { HandleServerError } from '@sveltejs/kit/hooks';
+import { verifyCfAccess } from '#lib/server/cf-access.ts';
+import { makeAuthHandle } from '#lib/server/route-auth.ts';
 
 // SEC-1: origin-side Cloudflare Access gate for ALL non-public routes — page
 // loads, form actions, AND /api/*. Previously only the three /api/* endpoints
@@ -10,14 +10,17 @@ import { makeAuthHandle } from '$lib/server/route-auth.ts';
 // Public exemptions (/health, /callback, /auth/bexio) live in route-auth.ts.
 export const handle = makeAuthHandle(verifyCfAccess);
 
-export const handleError: HandleServerError = ({ error, event, status, message }) => {
+export const handleError: HandleServerError = ({ kind, error, event }) => {
   // SvelteKit's default error logger prints `undefined` for non-Error throws
   // and hides the stack; this hook surfaces enough detail to debug 500s
   // (especially during the Coolify bootstrap where /health is the canary).
+  // Kit 3 also routes expected errors (error(), 404, validation) through here;
+  // only 'unknown' is an unexpected throw — the Kit 2 500 case. Log just that.
+  if (kind !== 'unknown') return;
   const path = event.url.pathname;
   const err = error as { message?: string; stack?: string; cause?: unknown } | null;
   // eslint-disable-next-line no-console
-  console.error(`[handleError] ${status} ${event.request.method} ${path}: ${message}`);
+  console.error(`[handleError] 500 ${event.request.method} ${path}`);
   // eslint-disable-next-line no-console
   console.error('error:', err?.message ?? err);
   if (err?.stack) {

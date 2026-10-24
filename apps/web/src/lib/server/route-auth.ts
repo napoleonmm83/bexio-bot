@@ -1,3 +1,5 @@
+import type { Handle } from '@sveltejs/kit/hooks';
+
 // Origin-side Cloudflare Access gate (SEC-1).
 //
 // hooks.server.ts wires `makeAuthHandle(verifyCfAccess)` as the global `handle`
@@ -12,9 +14,6 @@
 //   /callback    — bexio OAuth redirect target (guarded by the OAuth flow)
 //   /auth/bexio  — initiates / re-initiates the bexio OAuth flow (only redirects to bexio)
 // Everything else is protected.
-
-import type { Handle } from '@sveltejs/kit';
-
 const PUBLIC_PREFIXES = ['/health', '/callback', '/auth/bexio'] as const;
 
 export function isPublicRoute(pathname: string): boolean {

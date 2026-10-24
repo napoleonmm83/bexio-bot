@@ -18,7 +18,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { RequestHandler } from './$types.ts';
 import { getDb, getSetting, botRuns } from '@bexio-bot/db';
 import { runDaily } from '@bexio-bot/worker/run';
-import { verifyCfAccess, CfAccessError } from '$lib/server/cf-access.ts';
+import { verifyCfAccess, CfAccessError } from '#lib/server/cf-access.ts';
 
 // A real production run can exceed 30 min when many orders × bexio's 1.1s
 // rate-limit pacing. Two hours is a defensive upper bound. Configurable via the

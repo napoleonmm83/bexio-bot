@@ -15,7 +15,6 @@
     "isolatedModules": true,
     "lib": ["ESNext"],
     "types": ["bun-types"],
-    "baseUrl": ".",
     "paths": {
       "@bexio-bot/db": ["./packages/db/src/index.ts"],
       "@bexio-bot/notify": ["./packages/notify/src/index.ts"],
@@ -23,5 +22,5 @@
     }
   },
   "include": ["apps/**/*.ts", "packages/**/*.ts"],
-  "exclude": ["node_modules", "dist", "**/.svelte-kit"]
+  "exclude": ["node_modules", "dist", "**/.svelte-kit", "apps/web"]
 }
