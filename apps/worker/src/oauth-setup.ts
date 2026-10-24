@@ -122,7 +122,7 @@ const server = Bun.serve({
         return errorPage(`Token exchange failed: ${tokenRes.status} — ${errBody.slice(0, 200)}`);
       }
 
-      tokens = await tokenRes.json();
+      tokens = (await tokenRes.json()) as typeof tokens;
     } catch (err) {
       console.error('Token exchange threw:', err);
       setTimeout(() => resolveFlow(false), 100);

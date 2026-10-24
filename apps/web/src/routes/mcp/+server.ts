@@ -13,7 +13,7 @@ import { z } from 'zod';
 import type { RequestHandler } from './$types.ts';
 import { getDb } from '@bexio-bot/db';
 import { tvrAdd, tvrRemoveBeitrag, tvrRename, tvrSend, tvrStatus } from '@bexio-bot/worker/tvr';
-import type { CfAccessIdentity } from '$lib/server/cf-access.ts';
+import type { CfAccessIdentity } from '#lib/server/cf-access.ts';
 
 const isoDate = z
   .string()

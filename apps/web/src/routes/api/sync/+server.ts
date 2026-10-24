@@ -11,7 +11,7 @@ import type { RequestHandler } from './$types.ts';
 import { getDb, getSetting } from '@bexio-bot/db';
 import { getValidAccessToken } from '@bexio-bot/bexio-client';
 import { syncRecurringOrders, importOrderById, type SyncMode } from '@bexio-bot/worker/sync';
-import { verifyCfAccess, CfAccessError } from '$lib/server/cf-access.ts';
+import { verifyCfAccess, CfAccessError } from '#lib/server/cf-access.ts';
 
 export const POST: RequestHandler = async ({ request }) => {
   try {
