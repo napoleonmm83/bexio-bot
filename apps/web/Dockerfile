@@ -23,7 +23,11 @@ COPY apps/web ./apps/web
 COPY apps/worker ./apps/worker
 COPY packages ./packages
 
-RUN cd apps/web && bun run build
+# Kit 3 needs real Node >=22.17 for the build: under the bun image's `node`
+# shim the route analysis exits silently (rc=0) and adapter-node never writes
+# build/. Runtime stays bun.
+RUN apk add --no-cache nodejs
+RUN cd apps/web && PATH=/usr/bin:$PATH bun run build && test -f build/index.js
 
 # ── Runtime image ─────────────────────────────────────
 FROM oven/bun:1.3.12-alpine AS runtime
