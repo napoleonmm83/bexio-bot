@@ -58,10 +58,9 @@ export const GET: RequestHandler = async ({ request, params }) => {
       const status = err.code === 'server-misconfigured' ? 500 : 401;
       return json(status, { error: err.code, message: err.message });
     }
-    return json(500, {
-      error: 'internal',
-      message: err instanceof Error ? err.message : String(err),
-    });
+    // Like SEC-3 in /health: driver errors can carry DB internals — log, return generic.
+    console.error('[runs] internal error:', err);
+    return json(500, { error: 'internal' });
   }
 };
 
