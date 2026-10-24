@@ -69,6 +69,31 @@ describe('makeAuthHandle — origin-side CF Access gate (SEC-1)', () => {
     expect(event.locals.cfAccess).toBe(identity);
   });
 
+  test('protected responses are never cacheable; public ones are left alone', async () => {
+    const handle = makeAuthHandle(async () => ({}));
+    const page = await handle({
+      event: { url: new URL('https://x/'), request: new Request('https://x/'), locals: {} },
+      resolve: okResolve,
+    } as never);
+    expect(page.headers.get('cache-control')).toBe('private, no-store');
+    const health = await handle({
+      event: { url: new URL('https://x/health'), request: new Request('https://x/health'), locals: {} },
+      resolve: okResolve,
+    } as never);
+    expect(health.headers.get('cache-control')).toBeNull();
+  });
+
+  test('immutable-header responses (Response.redirect) still get no-store, status kept', async () => {
+    const handle = makeAuthHandle(async () => ({}));
+    const res = await handle({
+      event: { url: new URL('https://x/'), request: new Request('https://x/'), locals: {} },
+      resolve: async () => Response.redirect('https://x/settings', 303),
+    } as never);
+    expect(res.status).toBe(303);
+    expect(res.headers.get('location')).toBe('https://x/settings');
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+  });
+
   test('server-misconfigured maps to 500, not 401', async () => {
     const handle = makeAuthHandle(async () => { throw cfErr('server-misconfigured'); });
     const res = await handle({

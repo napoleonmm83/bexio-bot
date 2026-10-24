@@ -55,6 +55,17 @@ export function makeAuthHandle(verify: CfVerify): Handle {
         { status, headers: { 'Content-Type': 'application/json' } },
       );
     }
-    return resolve(event);
+    const res = await resolve(event);
+    // Authenticated pages are live DB state: without this the SSR HTML carried
+    // no Cache-Control, so a reload could show a stale dashboard (toggle bug).
+    try {
+      res.headers.set('Cache-Control', 'private, no-store');
+      return res;
+    } catch {
+      // Immutable headers (e.g. Response.redirect / passed-through fetch): copy.
+      const copy = new Response(res.body, res);
+      copy.headers.set('Cache-Control', 'private, no-store');
+      return copy;
+    }
   };
 }
