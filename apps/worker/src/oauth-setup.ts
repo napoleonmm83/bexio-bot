@@ -20,7 +20,7 @@ const TOKEN_URL = 'https://auth.bexio.com/realms/bexio/protocol/openid-connect/t
 // - kb_invoice_show:  GET /kb_invoice/{id} (for crash-recovery reconciliation)
 // - kb_invoice_edit:  POST /kb_invoice/{id}/issue, POST /kb_invoice/{id}/send
 // - contact_show:     GET /contact/{id} (for resolving customer names)
-const SCOPES = 'openid offline_access kb_order_show kb_order_edit kb_invoice_show kb_invoice_edit contact_show';
+const SCOPES = 'openid offline_access kb_order_show kb_order_edit kb_invoice_show kb_invoice_edit contact_show accounting article_show project_show kb_bill_show kb_offer_show kb_expense_show bank_account_show company_profile';
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
   console.error('Missing BEXIO_CLIENT_ID or BEXIO_CLIENT_SECRET in .env.local');

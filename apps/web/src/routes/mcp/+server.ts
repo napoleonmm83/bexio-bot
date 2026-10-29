@@ -14,6 +14,8 @@ import type { RequestHandler } from './$types.ts';
 import { getDb } from '@bexio-bot/db';
 import { tvrAdd, tvrRemoveBeitrag, tvrRename, tvrSend, tvrStatus } from '@bexio-bot/worker/tvr';
 import type { CfAccessIdentity } from '#lib/server/cf-access.ts';
+import { isAllowedBexioPath } from '#lib/server/bexio-path.ts';
+import { callBexio, getValidAccessToken } from '@bexio-bot/bexio-client';
 
 const isoDate = z
   .string()
@@ -121,6 +123,36 @@ function buildServer(caller: string | undefined) {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
     },
     (args) => run(() => tvrRemoveBeitrag(db, args, caller)),
+  );
+
+  server.registerTool(
+    'bexio_get',
+    {
+      title: 'bexio: Daten lesen (GET)',
+      description:
+        'Liest beliebige Daten aus der bexio-API, NUR lesend (GET). path inkl. Version, z. B.: ' +
+        '/3.0/accounting/journal (Buchungsjournal; query from/to YYYY-MM-DD, account_uuid), ' +
+        '/2.0/accounts (Kontenplan), /2.0/account_groups, /3.0/accounting/taxes, /3.0/accounting/business_years, ' +
+        '/2.0/kb_invoice (Rechnungen), /2.0/kb_offer, /2.0/kb_order, /4.0/purchase/bills (Lieferantenrechnungen), ' +
+        '/4.0/expenses, /2.0/contact, /2.0/article, /2.0/pr_project, /3.0/banking/accounts, /2.0/company_profile. ' +
+        'Listen paginieren mit query limit (max 2000) und offset. Umsatz pro Jahr: Journal pro Geschäftsjahr ' +
+        'über die Ertragskonten (3xxx) summieren.',
+      inputSchema: {
+        path: z.string().refine(isAllowedBexioPath, 'path muss mit /2.0/, /3.0/ oder /4.0/ beginnen').describe('API-Pfad'),
+        query: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional()
+          .refine((q) => q?.limit == null || Number(q.limit) <= 2000, 'limit höchstens 2000')
+          .describe('Query-Parameter, z. B. {"limit": 500, "offset": 0, "from": "2025-01-01"}'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    ({ path, query }) =>
+      run(async () => {
+        console.log(`[mcp] bexio_get ${path} by ${caller ?? 'unknown'}`);
+        const accessToken = await getValidAccessToken(db);
+        return callBexio(path, { accessToken, query, versionedPath: true });
+      }),
   );
 
   return server;
