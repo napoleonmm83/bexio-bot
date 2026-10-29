@@ -16,6 +16,15 @@ export const SCOPES = [
   'kb_invoice_show',
   'kb_invoice_edit',
   'contact_show',
+  // Read access for the /mcp bexio_get tool (accounting = journal/accounts/reports).
+  'accounting',
+  'article_show',
+  'project_show',
+  'kb_bill_show',
+  'kb_offer_show',
+  'kb_expense_show',
+  'bank_account_show',
+  'company_profile',
 ].join(' ');
 
 export type TokenResponse = {

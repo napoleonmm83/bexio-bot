@@ -123,6 +123,8 @@ export type ApiCallOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
   query?: Record<string, string | number | boolean>;
+  // true = `path` already carries its API version (/2.0/…, /3.0/…), e.g. accounting lives under /3.0.
+  versionedPath?: boolean;
 };
 
 /**
@@ -132,7 +134,8 @@ export type ApiCallOptions = {
 export async function callBexio<T>(path: string, opts: ApiCallOptions, retryOn429 = true): Promise<T> {
   await pace();
 
-  const url = new URL(`${BEXIO_API_BASE}${path.startsWith('/') ? path : `/${path}`}`);
+  const base = opts.versionedPath ? 'https://api.bexio.com' : BEXIO_API_BASE;
+  const url = new URL(`${base}${path.startsWith('/') ? path : `/${path}`}`);
   if (opts.query) {
     for (const [k, v] of Object.entries(opts.query)) {
       url.searchParams.set(k, String(v));
