@@ -17,7 +17,7 @@ async function rpc(body: unknown) {
 }
 
 describe('/mcp', () => {
-  test('lists exactly the five TV-Rheintal tools; send requires confirm=true', async () => {
+  test('lists the five TV-Rheintal tools plus read-only bexio_get; send requires confirm=true', async () => {
     const init = await rpc({
       jsonrpc: '2.0',
       id: 1,
@@ -30,6 +30,7 @@ describe('/mcp', () => {
     expect(list.status).toBe(200);
     const tools = list.json.result.tools as { name: string; inputSchema: { properties: Record<string, unknown>; required?: string[] } }[];
     expect(tools.map((t) => t.name).sort()).toEqual([
+      'bexio_get',
       'tvr_add_beitrag',
       'tvr_billing_status',
       'tvr_remove_beitrag',
@@ -41,6 +42,7 @@ describe('/mcp', () => {
       (tools as unknown as { name: string; annotations: Record<string, boolean> }[]).map((t) => [t.name, t.annotations]),
     );
     expect(ann.tvr_billing_status).toMatchObject({ readOnlyHint: true });
+    expect(ann.bexio_get).toMatchObject({ readOnlyHint: true });
     expect(ann.tvr_add_beitrag).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
     expect(ann.tvr_rename_beitrag).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
     expect(ann.tvr_remove_beitrag).toMatchObject({ readOnlyHint: false, destructiveHint: true });
