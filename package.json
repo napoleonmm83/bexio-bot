@@ -21,7 +21,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "bun-types": "1.4.3",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "postcss": "^8.5.23",
